@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveSync Admin</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #root { height: 100%; }
+      .admin-loader {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        background: #020617;
+        font-family: system-ui, sans-serif;
+      }
+      .admin-loader-ring {
+        width: 36px;
+        height: 36px;
+        border: 3px solid #1e293b;
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="admin-loader">
+        <div class="admin-loader-ring"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

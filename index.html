@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#1E40AF" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    
+    <title>LiveSync AI — Your Personal Financial Operating System</title>
+    <meta name="description" content="AI-powered financial operating system that helps you understand, predict, and improve your financial life. Track expenses, budgets, goals, taxes, net worth, and more." />
+    
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #root { height: 100%; }
+      
+      /* Loading screen */
+      .app-loader {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        background: #F8FAFC;
+        font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+      }
+      .app-loader-inner {
+        text-align: center;
+      }
+      .app-loader-ring {
+        width: 48px;
+        height: 48px;
+        border: 3px solid #E2E8F0;
+        border-top-color: #1E40AF;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto 16px;
+      }
+      .app-loader-text {
+        color: #64748B;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root">
+      <div class="app-loader">
+        <div class="app-loader-inner">
+          <div class="app-loader-ring"></div>
+          <div class="app-loader-text">Loading LiveSync AI...</div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

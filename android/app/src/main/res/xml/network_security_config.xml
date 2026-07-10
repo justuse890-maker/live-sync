@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <!-- Supabase -->
+        <domain includeSubdomains="true">supabase.co</domain>
+        <!-- Groq AI API -->
+        <domain includeSubdomains="true">groq.com</domain>
+        <!-- App domain -->
+        <domain includeSubdomains="true">livesync.ai</domain>
+    </domain-config>
+    <!-- Allow localhost for dev builds -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
