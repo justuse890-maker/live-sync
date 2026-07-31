@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert } from "lucide-react";
+import { ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert, Newspaper, Scale, Phone, Cloud } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { inr, ScreenId } from "../types";
@@ -8,15 +8,16 @@ import { useStore } from "../../store";
 import { netWorth } from "../../lib/intelligence";
 
 const wealth: { id: ScreenId; label: string; icon: any; tint: string }[] = [
-  { id: "networth", label: "Net Worth Command Center", icon: Wallet, tint: "#1E40AF" },
-  { id: "timeline", label: "Financial Timeline", icon: Calendar, tint: "#0EA5E9" },
-  { id: "leakage", label: "Wealth Leakage Detector", icon: Droplets, tint: "#EF4444" },
-  { id: "inflation", label: "Lifestyle Inflation Monitor", icon: TrendingUp, tint: "#F59E0B" },
-  { id: "fire", label: "FIRE Engine", icon: Flame, tint: "#8B5CF6" },
-  { id: "simulator", label: "Decision Simulator", icon: Sparkles, tint: "#10B981" },
-  { id: "investments", label: "Investment Portfolio", icon: TrendingUp, tint: "#10B981" },
-  { id: "gold", label: "Gold Tracker", icon: Coins, tint: "#F59E0B" },
-  { id: "property", label: "Real Estate (Properties)", icon: Home, tint: "#8B5CF6" },
+  { id: "news",      label: "Financial News Hub",          icon: Newspaper,  tint: "#0EA5E9" },
+  { id: "networth",  label: "Net Worth Command Center",     icon: Wallet,     tint: "#1E40AF" },
+  { id: "timeline",  label: "Financial Timeline",           icon: Calendar,   tint: "#0EA5E9" },
+  { id: "leakage",   label: "Wealth Leakage Detector",      icon: Droplets,   tint: "#EF4444" },
+  { id: "inflation", label: "Lifestyle Inflation Monitor",  icon: TrendingUp, tint: "#F59E0B" },
+  { id: "fire",      label: "FIRE Engine",                  icon: Flame,      tint: "#8B5CF6" },
+  { id: "simulator", label: "Decision Simulator",           icon: Sparkles,   tint: "#10B981" },
+  { id: "investments",label: "Investment Portfolio",        icon: TrendingUp, tint: "#10B981" },
+  { id: "gold",      label: "Gold Tracker",                 icon: Coins,      tint: "#F59E0B" },
+  { id: "property",  label: "Real Estate (Properties)",     icon: Home,       tint: "#8B5CF6" },
 ];
 
 const more: { id: ScreenId; label: string; icon: any; tint: string }[] = [
@@ -44,14 +45,23 @@ const settings: { label: string; icon: any; id?: ScreenId }[] = [
   { label: "Subscription Plan", icon: CreditCard, id: "pricing" },
   { label: "Import transactions", icon: Upload, id: "import" },
   { label: "Privacy & Data", icon: FileText, id: "privacy" },
+  { label: "Data Safety & Account", icon: Shield, id: "data-safety" },
+  { label: "Cloud Backup", icon: Cloud, id: "cloud-backup" },
   { label: "Send feedback", icon: MessageSquare, id: "feedback" },
   { label: "Help & Support", icon: HelpCircle },
+];
+
+const legal: { label: string; icon: any; id: ScreenId }[] = [
+  { label: "Privacy Policy", icon: Shield, id: "privacy-policy" },
+  { label: "Terms & Conditions", icon: Scale, id: "terms" },
+  { label: "Contact Us", icon: Phone, id: "contact" },
 ];
 
 export function Profile({ go }: { go: (id: ScreenId) => void }) {
   const [userName, setUserName] = useState("User");
   const [userEmail, setUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
+  const [signOutConfirm, setSignOutConfirm] = useState(false);
   const { transactions, assets, liabilities } = useStore();
 
   useEffect(() => {
@@ -111,6 +121,23 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
             <StatCard label="Runway" value={emergencyMonths > 0 ? `${emergencyMonths}m` : "—"} />
           </div>
 
+          {/* ITR Filing Autopilot Action */}
+          <button
+            onClick={() => go("itr-filing")}
+            className="w-full flex items-center justify-between bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl p-4 shadow-lg shadow-indigo-500/20 active:scale-95 transition-transform"
+          >
+            <div className="flex items-center gap-3">
+              <div className="size-10 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm">
+                <FileText className="size-5 text-white" />
+              </div>
+              <div className="text-left">
+                <div className="font-bold font-display tracking-wide text-[15px]">File ITR (Autopilot)</div>
+                <div className="text-xs text-blue-100 font-medium mt-0.5">CA-level accuracy • Zero effort</div>
+              </div>
+            </div>
+            <ChevronRight className="size-5 text-white/80" />
+          </button>
+
           <Section title="Wealth intelligence">
             {wealth.map((m) => (
               <Row key={m.id} icon={<m.icon className="size-4" />} tint={m.tint} label={m.label} onClick={() => go(m.id)} />
@@ -129,10 +156,29 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
             ))}
           </Section>
 
-          <button onClick={() => api.signout()} className="w-full bg-card rounded-2xl p-4 border border-border/60 flex items-center gap-3 text-rose-600">
-            <LogOut className="size-4" />
-            <span className="text-sm" style={{ fontWeight: 600 }}>Sign out</span>
-          </button>
+          <Section title="Legal">
+            {legal.map((l) => (
+              <Row key={l.id} icon={<l.icon className="size-4" />} tint="#64748B" label={l.label} onClick={() => go(l.id)} />
+            ))}
+          </Section>
+
+          {signOutConfirm ? (
+            <div className="bg-card rounded-2xl border border-rose-200 p-4 flex flex-col gap-3">
+              <p className="text-sm font-semibold text-center">Sign out of LiveSync?</p>
+              <p className="text-xs text-muted-foreground text-center">Your data stays safely in the cloud.</p>
+              <div className="flex gap-2">
+                <button onClick={() => setSignOutConfirm(false)} className="flex-1 bg-muted rounded-xl py-2.5 text-sm font-semibold">Cancel</button>
+                <button onClick={() => api.signout()} className="flex-[2] bg-rose-600 text-white rounded-xl py-2.5 text-sm font-bold flex items-center justify-center gap-1.5">
+                  <LogOut className="size-3.5" /> Sign out
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setSignOutConfirm(true)} className="w-full bg-card rounded-2xl p-4 border border-border/60 flex items-center gap-3 text-rose-600 active:scale-[0.98] transition-transform">
+              <LogOut className="size-4" />
+              <span className="text-sm" style={{ fontWeight: 600 }}>Sign out</span>
+            </button>
+          )}
 
           <div className="text-center text-xs text-muted-foreground py-2">LiveSync AI · v1.0.0</div>
         </div>

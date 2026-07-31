@@ -106,7 +106,7 @@ app.post("/make-server-a3fe149f/admin/bootstrap", async (c) => {
 });
 
 // --- Generic collection routes ---
-const collections = ["transactions", "goals", "budgets", "subscriptions", "loans", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"] as const;
+const collections = ["transactions", "goals", "buckets", "bucketContributions", "budgets", "subscriptions", "loans", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"] as const;
 type Collection = (typeof collections)[number];
 const EDIT_WINDOW_MS = 5 * 60 * 1000;
 
@@ -1046,6 +1046,49 @@ app.post("/make-server-a3fe149f/admin/feedback/:userId/:id/status", async (c) =>
     await kv.set(key, updated);
     return c.json({ item: updated });
   } catch (e) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
+app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
+  const userId = await requireUser(c);
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const { id } = c.req.param(); // bucketId
+    const body = await c.req.json();
+    const contribId = body.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    // Fetch bucket
+    const bucketKey = keyFor(userId, "buckets", id);
+    const bucket = await kv.get(bucketKey);
+    if (!bucket) return c.json({ error: "Bucket not found" }, 404);
+
+    // Save contribution
+    const contrib = {
+      id: contribId,
+      bucketId: id,
+      userId,
+      amount: Number(body.amount) || 0,
+      sourceAccountId: body.sourceAccountId || null,
+      note: body.note || "",
+      date: body.date || now,
+      linkedTransactionId: body.linkedTransactionId || null,
+      createdAt: body.createdAt || now,
+    };
+    await kv.set(keyFor(userId, "bucketContributions", contribId), contrib);
+
+    // Update bucket savedAmount
+    bucket.savedAmount = (Number(bucket.savedAmount) || 0) + contrib.amount;
+    if (bucket.savedAmount >= (Number(bucket.targetAmount) || 0)) {
+      bucket.status = "completed";
+    }
+    bucket.updatedAt = now;
+    await kv.set(bucketKey, bucket);
+
+    return c.json({ item: contrib, bucket, justCompleted: bucket.status === "completed" });
+  } catch (e) {
+    console.log("Add bucket contribution failed:", e);
     return c.json({ error: String(e) }, 500);
   }
 });

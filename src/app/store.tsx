@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useContext, useEffect, useState, useCallback } from "react";
 import { api } from "./lib/api";
 import { Asset, Liability, LifeEvent } from "./lib/intelligence";
+import { saveToCache, loadFromCache, clearCache } from "./lib/localCache";
 
 export type PaymentMode = "cash" | "upi" | "credit" | "debit" | "other";
 export type PaymentSplit = { mode: PaymentMode; amount: number };
@@ -36,6 +37,55 @@ export type Loan = {
   repayBy: string;
   notes?: string;
   settled?: boolean;
+};
+
+export type StructuredLoanType =
+  | "home_loan"
+  | "car_loan"
+  | "personal_loan"
+  | "education_loan"
+  | "property_registration"
+  | "builder_demand"
+  | "other";
+
+export type BuilderMilestone = {
+  stage: string; // e.g. "Slab", "Possession"
+  amount: number;
+  dueDate: string;
+  paid: boolean;
+};
+
+export type StructuredLoan = {
+  id: string;
+  loanType: StructuredLoanType;
+  lenderName: string; // Bank name or person for registration loan
+  linkedPropertyId?: string; // ID from the properties collection
+  principalAmount: number;
+  outstandingPrincipal: number;
+  interestRatePA: number; // Annual interest rate %
+  tenureMonths: number;
+  emiAmount: number;
+  disbursementDate: string;
+  nextEmiDueDate: string;
+  emisPaid: number;
+  totalEmis: number;
+  isRegistrationLoan: boolean;
+  builderMilestones?: BuilderMilestone[];
+  notes?: string;
+  closed?: boolean;
+  createdAt?: string;
+};
+
+export type CreditCard = {
+  id: string;
+  bankName: string;
+  cardName: string; // e.g. "HDFC Regalia"
+  last4Digits: string;
+  creditLimit: number;
+  statementDate: number; // Day of month (1-31)
+  dueDate: number; // Days after statement date
+  color: string; // for display
+  notes?: string;
 };
 
 export type Sip = {
@@ -126,6 +176,33 @@ export type Goal = {
   month?: string;
 };
 
+export type Bucket = {
+  id: string;
+  userId?: string;
+  name: string;
+  description?: string;
+  targetAmount: number;
+  savedAmount: number;
+  monthlySaveTarget?: number; // P3: how much to save per month
+  targetDate?: string;
+  iconOrColor: string;
+  status: "active" | "completed" | "archived";
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type BucketContribution = {
+  id: string;
+  bucketId: string;
+  userId?: string;
+  amount: number;
+  sourceAccountId?: string;
+  note?: string;
+  date: string;
+  linkedTransactionId?: string;
+  createdAt: string;
+};
+
 export type Budget = {
   id: string;
   category: string;
@@ -153,10 +230,14 @@ const DEFAULT_CATEGORIES = ["Food", "Travel", "Shopping", "Grocery", "Medical", 
 type StoreCtx = {
   ready: boolean;
   transactions: Tx[];
+  buckets: Bucket[];
+  bucketContributions: BucketContribution[];
   goals: Goal[];
   budgets: Budget[];
   subscriptions: Subscription[];
   loans: Loan[];
+  structuredLoans: StructuredLoan[];
+  creditCards: CreditCard[];
   assets: Asset[];
   liabilities: Liability[];
   lifeEvents: LifeEvent[];
@@ -183,6 +264,12 @@ type StoreCtx = {
   addLoan: (l: Omit<Loan, "id">) => Promise<void>;
   settleLoan: (id: string) => Promise<void>;
   removeLoan: (id: string) => Promise<void>;
+  addStructuredLoan: (l: Omit<StructuredLoan, "id">) => Promise<void>;
+  updateStructuredLoan: (l: StructuredLoan) => Promise<void>;
+  removeStructuredLoan: (id: string) => Promise<void>;
+  addCreditCard: (c: Omit<CreditCard, "id">) => Promise<void>;
+  updateCreditCard: (c: CreditCard) => Promise<void>;
+  removeCreditCard: (id: string) => Promise<void>;
   addCategory: (name: string) => Promise<void>;
   removeCategory: (name: string) => Promise<void>;
   addSip: (s: Omit<Sip, "id">) => Promise<void>;
@@ -203,6 +290,10 @@ type StoreCtx = {
   addGoal: (g: Omit<Goal, "id">) => Promise<void>;
   updateGoal: (g: Goal) => Promise<void>;
   removeGoal: (id: string) => Promise<void>;
+  addBucket: (b: Omit<Bucket, "id" | "status" | "savedAmount">) => Promise<void>;
+  updateBucket: (b: Bucket) => Promise<void>;
+  archiveBucket: (id: string) => Promise<void>;
+  addBucketContribution: (bucketId: string, amount: number, note?: string, sourceAccountId?: string) => Promise<void>;
   addBudget: (b: Omit<Budget, "id">) => Promise<void>;
   updateBudget: (b: Budget) => Promise<void>;
   removeBudget: (id: string) => Promise<void>;
@@ -216,6 +307,8 @@ const Ctx = createContext<StoreCtx | null>(null);
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [transactions, setTransactions] = useState<Tx[]>([]);
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [bucketContributions, setBucketContributions] = useState<BucketContribution[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
@@ -223,6 +316,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return new Date().toISOString().slice(0, 7); // Default e.g. "2026-06" or "2026-07"
   });
   const [loans, setLoans] = useState<Loan[]>([]);
+  const [structuredLoans, setStructuredLoans] = useState<StructuredLoan[]>([]);
+  const [creditCards, setCreditCards] = useState<CreditCard[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [lifeEvents, setLifeEvents] = useState<LifeEvent[]>([]);
@@ -236,11 +331,74 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([]);
 
   const refresh = useCallback(async () => {
+    // ── Phase 1: Load from local cache (instant, offline-first) ──
+    try {
+      const [
+        cachedTx, cachedLoans, cachedCats, cachedAssets, cachedLiab, cachedEvents,
+        cachedSips, cachedIns, cachedInv, cachedGold, cachedProp, cachedCs, cachedFraud,
+        cachedGoals, cachedBudgets, cachedSubs, cachedBuckets, cachedBucketContribs,
+        cachedStructuredLoans, cachedCreditCards,
+      ] = await Promise.all([
+        loadFromCache<Tx>("transactions"),
+        loadFromCache<Loan>("loans"),
+        loadFromCache<{ id: string; name: string }>("categories"),
+        loadFromCache<Asset>("assets"),
+        loadFromCache<Liability>("liabilities"),
+        loadFromCache<LifeEvent>("lifeEvents"),
+        loadFromCache<Sip>("sips"),
+        loadFromCache<InsurancePolicy>("insurance"),
+        loadFromCache<Investment>("investments"),
+        loadFromCache<GoldHolding>("gold"),
+        loadFromCache<Property>("properties"),
+        loadFromCache<CreditScoreLog>("creditScore"),
+        loadFromCache<FraudAlert>("fraudAlerts"),
+        loadFromCache<Goal>("goals"),
+        loadFromCache<Budget>("budgets"),
+        loadFromCache<Subscription>("subscriptions"),
+        loadFromCache<Bucket>("buckets"),
+        loadFromCache<BucketContribution>("bucketContributions"),
+        loadFromCache<StructuredLoan>("structuredLoans"),
+        loadFromCache<CreditCard>("creditCards"),
+      ]);
+
+      // Apply cached data if available (instant rendering)
+      if (cachedTx) setTransactions(cachedTx.sort((a, b) => (a.date < b.date ? 1 : -1)));
+      if (cachedLoans) setLoans(cachedLoans);
+      if (cachedStructuredLoans) setStructuredLoans(cachedStructuredLoans);
+      if (cachedCreditCards) setCreditCards(cachedCreditCards);
+      if (cachedAssets) setAssets(cachedAssets);
+      if (cachedLiab) setLiabilities(cachedLiab);
+      if (cachedEvents) setLifeEvents(cachedEvents);
+      if (cachedSips) setSips(cachedSips);
+      if (cachedIns) setInsurance(cachedIns);
+      if (cachedInv) setInvestments(cachedInv);
+      if (cachedGold) setGold(cachedGold);
+      if (cachedProp) setProperties(cachedProp);
+      if (cachedCs) setCreditScore(cachedCs.sort((a, b) => b.date.localeCompare(a.date)));
+      if (cachedFraud) setFraudAlerts(cachedFraud);
+      if (cachedGoals) setGoals(cachedGoals);
+      if (cachedBuckets) setBuckets(cachedBuckets);
+      if (cachedBucketContribs) setBucketContributions(cachedBucketContribs.sort((a, b) => (a.date < b.date ? 1 : -1)));
+      if (cachedBudgets) setBudgets(cachedBudgets);
+      if (cachedSubs) setSubscriptions(cachedSubs);
+      if (cachedCats && cachedCats.length > 0) {
+        const custom = cachedCats.map((c) => c.name).filter(Boolean);
+        setCategories(Array.from(new Set([...DEFAULT_CATEGORIES, ...custom])));
+      }
+      // Mark ready early if we had cached data
+      const hadCache = cachedTx || cachedGoals || cachedLoans;
+      if (hadCache) setReady(true);
+    } catch (e) {
+      console.warn("Local cache load failed (non-fatal):", e);
+    }
+
+    // ── Phase 2: Sync from cloud (background) ──
     try {
       const [
         txRemote, loansRemote, catsRemote, assetsRemote, liabRemote, eventsRemote,
         sipsRemote, insRemote, invRemote, goldRemote, propRemote, csRemote, fraudRemote,
-        goalsRemote, budgetsRemote, subsRemote
+        goalsRemote, budgetsRemote, subsRemote, bucketsRemote, bucketContribsRemote,
+        structuredLoansRemote, creditCardsRemote
       ] = await Promise.all([
         api.list<Tx>("transactions"),
         api.list<Loan>("loans"),
@@ -258,6 +416,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         api.list<Goal>("goals"),
         api.list<Budget>("budgets"),
         api.list<Subscription>("subscriptions"),
+        api.list<Bucket>("buckets"),
+        api.list<BucketContribution>("bucketContributions"),
+        api.list<StructuredLoan>("structuredLoans"),
+        api.list<CreditCard>("creditCards"),
       ]);
       setAssets(assetsRemote);
       setLiabilities(liabRemote);
@@ -271,7 +433,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setFraudAlerts(fraudRemote);
       setTransactions(txRemote.sort((a, b) => (a.date < b.date ? 1 : -1)));
       setLoans(loansRemote);
+      setStructuredLoans(structuredLoansRemote);
+      setCreditCards(creditCardsRemote);
       setGoals(goalsRemote);
+      setBuckets(bucketsRemote);
+      setBucketContributions(bucketContribsRemote.sort((a, b) => (a.date < b.date ? 1 : -1)));
       setBudgets(budgetsRemote);
       setSubscriptions(subsRemote);
 
@@ -282,6 +448,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const merged = Array.from(new Set([...DEFAULT_CATEGORIES, ...custom]));
         setCategories(merged);
       }
+
+      // ── Persist to local cache for next launch ──
+      saveToCache("transactions", txRemote);
+      saveToCache("loans", loansRemote);
+      saveToCache("categories", catsRemote);
+      saveToCache("assets", assetsRemote);
+      saveToCache("liabilities", liabRemote);
+      saveToCache("lifeEvents", eventsRemote);
+      saveToCache("sips", sipsRemote);
+      saveToCache("insurance", insRemote);
+      saveToCache("investments", invRemote);
+      saveToCache("gold", goldRemote);
+      saveToCache("properties", propRemote);
+      saveToCache("creditScore", csRemote);
+      saveToCache("fraudAlerts", fraudRemote);
+      saveToCache("goals", goalsRemote);
+      saveToCache("budgets", budgetsRemote);
+      saveToCache("subscriptions", subsRemote);
+      saveToCache("buckets", bucketsRemote);
+      saveToCache("bucketContributions", bucketContribsRemote);
+      saveToCache("structuredLoans", structuredLoansRemote);
+      saveToCache("creditCards", creditCardsRemote);
     } catch (e) {
       console.error("Initial store load failed:", e);
     } finally {
@@ -290,6 +478,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Clear all in-memory state when user signs out — prevents data bleed between sessions
+  useEffect(() => {
+    const sub = api.onAuth((signedIn) => {
+      if (!signedIn) {
+        setTransactions([]);
+        setGoals([]);
+        setBudgets([]);
+        setSubscriptions([]);
+        setLoans([]);
+        setStructuredLoans([]);
+        setCreditCards([]);
+        setAssets([]);
+        setLiabilities([]);
+        setLifeEvents([]);
+        setCategories(DEFAULT_CATEGORIES);
+        setSips([]);
+        setInsurance([]);
+        setInvestments([]);
+        setGold([]);
+        setProperties([]);
+        setCreditScore([]);
+        setFraudAlerts([]);
+        setReady(false);
+        // Clear local cache to prevent data leakage between sessions
+        clearCache();
+      }
+    });
+    return () => { sub.data.subscription.unsubscribe(); };
+  }, []);
 
   // Repayment reminder: surface a browser notification once per session for loans due within 2 days
   useEffect(() => {
@@ -382,6 +600,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       console.error("Remove loan failed:", e);
     }
+  };
+
+  const addStructuredLoan = async (l: Omit<StructuredLoan, "id">) => {
+    try {
+      const created = await api.create<StructuredLoan>("structuredLoans", l);
+      setStructuredLoans((prev) => [created, ...prev]);
+    } catch (e) { console.error("Add structured loan failed:", e); }
+  };
+
+  const updateStructuredLoan = async (l: StructuredLoan) => {
+    try {
+      const updated = await api.create<StructuredLoan>("structuredLoans", l);
+      setStructuredLoans((prev) => prev.map((x) => (x.id === l.id ? updated : x)));
+    } catch (e) { console.error("Update structured loan failed:", e); }
+  };
+
+  const removeStructuredLoan = async (id: string) => {
+    try {
+      await api.remove("structuredLoans", id);
+      setStructuredLoans((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) { console.error("Remove structured loan failed:", e); }
+  };
+
+  const addCreditCard = async (c: Omit<CreditCard, "id">) => {
+    try {
+      const created = await api.create<CreditCard>("creditCards", c);
+      setCreditCards((prev) => [...prev, created]);
+    } catch (e) { console.error("Add credit card failed:", e); }
+  };
+
+  const updateCreditCard = async (c: CreditCard) => {
+    try {
+      const updated = await api.create<CreditCard>("creditCards", c);
+      setCreditCards((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (e) { console.error("Update credit card failed:", e); }
+  };
+
+  const removeCreditCard = async (id: string) => {
+    try {
+      await api.remove("creditCards", id);
+      setCreditCards((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) { console.error("Remove credit card failed:", e); }
   };
 
   const addCategory = async (name: string) => {
@@ -486,11 +746,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const created = await api.create<Investment>("investments", inv);
       setInvestments((prev) => [...prev, created]);
       await upsertAsset({
-        category: "investment",
+        kind: inv.type === "mutual_fund" || inv.type === "elss" ? "mf" :
+              inv.type === "fixed_deposit" ? "fd" :
+              inv.type === "stocks" ? "stocks" :
+              inv.type === "ppf" ? "ppf" :
+              inv.type === "nps" ? "nps" : "other",
         name: inv.name,
         value: inv.currentValue,
         notes: `Portfolio: ${inv.type}`
-      });
+      } as any);
     } catch (e) {
       console.error("Add investment failed:", e);
     }
@@ -531,11 +795,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const created = await api.create<GoldHolding>("gold", g);
       setGold((prev) => [...prev, created]);
       await upsertAsset({
-        category: "gold",
+        kind: "gold",
         name: g.name,
         value: g.purchasePrice,
         notes: `${g.weightGrams}g ${g.type}`
-      });
+      } as any);
     } catch (e) {
       console.error("Add gold failed:", e);
     }
@@ -561,11 +825,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const created = await api.create<Property>("properties", p);
       setProperties((prev) => [...prev, created]);
       await upsertAsset({
-        category: "property",
+        kind: "property",
         name: p.name,
         value: p.currentValuation,
         notes: `${p.type} property`
-      });
+      } as any);
     } catch (e) {
       console.error("Add property failed:", e);
     }
@@ -656,6 +920,57 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const addBucket = async (b: Omit<Bucket, "id" | "status" | "savedAmount">) => {
+    try {
+      const payload = { ...b, status: "active", savedAmount: 0 };
+      const created = await api.create<Bucket>("buckets", payload);
+      setBuckets((prev) => [...prev, created]);
+    } catch (e) {
+      console.error("Add bucket failed:", e);
+    }
+  };
+
+  const updateBucket = async (b: Bucket) => {
+    try {
+      const updated = await api.create<Bucket>("buckets", b);
+      setBuckets((prev) => prev.map((x) => x.id === b.id ? updated : x));
+    } catch (e) {
+      console.error("Update bucket failed:", e);
+    }
+  };
+
+  const archiveBucket = async (id: string) => {
+    try {
+      const target = buckets.find((b) => b.id === id);
+      if (!target) return;
+      const updated = await api.create<Bucket>("buckets", { ...target, status: "archived" });
+      setBuckets((prev) => prev.map((x) => x.id === id ? updated : x));
+    } catch (e) {
+      console.error("Archive bucket failed:", e);
+    }
+  };
+
+  const addBucketContribution = async (bucketId: string, amount: number, note?: string, sourceAccountId?: string) => {
+    try {
+      const { data } = await api.session().then((s) => ({ data: { session: s } }));
+      const token = data.session?.access_token ?? "publicAnonKey";
+      const res = await fetch(`https://pnfdefqxkpnglbyzeqid.supabase.co/functions/v1/make-server-a3fe149f/buckets/${bucketId}/contributions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, note, sourceAccountId }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Contribution failed");
+      
+      const { item, bucket } = body;
+      setBucketContributions((prev) => [item, ...prev].sort((a, b) => (a.date < b.date ? 1 : -1)));
+      setBuckets((prev) => prev.map((x) => x.id === bucketId ? bucket : x));
+    } catch (e) {
+      console.error("Add bucket contribution failed:", e);
+      throw e;
+    }
+  };
+
   const addBudget = async (b: Omit<Budget, "id">) => {
     try {
       const created = await api.create<Budget>("budgets", b);
@@ -728,13 +1043,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      ready, transactions, goals, budgets, subscriptions, loans, assets, liabilities, lifeEvents, categories,
+      ready, transactions, buckets, bucketContributions, goals, budgets, subscriptions, loans, structuredLoans, creditCards,
+      assets, liabilities, lifeEvents, categories,
       sips, insurance, investments, gold, properties, creditScore, fraudAlerts, selectedMonth, setSelectedMonth, deleteAllData,
-      addTransaction, updateTransaction, deleteTransaction, addLoan, settleLoan, removeLoan, addCategory, removeCategory,
+      addTransaction, updateTransaction, deleteTransaction, addLoan, settleLoan, removeLoan,
+      addStructuredLoan, updateStructuredLoan, removeStructuredLoan,
+      addCreditCard, updateCreditCard, removeCreditCard,
+      addCategory, removeCategory,
       upsertAsset, removeAsset, upsertLiability, removeLiability, upsertLifeEvent, removeLifeEvent,
       addSip, removeSip, addInsurance, removeInsurance, addInvestment, updateInvestment, removeInvestment,
       addGold, removeGold, addProperty, updateProperty, removeProperty, addCreditScore, addFraudAlert, resolveFraudAlert,
-      addGoal, updateGoal, removeGoal, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription, refresh
+      addGoal, updateGoal, removeGoal, addBucket, updateBucket, archiveBucket, addBucketContribution, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription, refresh
     }}>
       {children}
     </Ctx.Provider>

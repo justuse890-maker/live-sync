@@ -68,7 +68,7 @@ export function Privacy({ onBack }: { onBack: () => void }) {
           purpose: "Generate personalised financial coaching and category suggestions",
           scope: ["Aggregated category totals", "Goal & budget progress", "Runway metrics"],
           grantedAt: "2026-01-01",
-          processor: "Anthropic Claude (via LiveSync, ap-south-1)",
+          processor: "Google Gemini (via LiveSync)",
           status: "active",
         });
 
@@ -119,16 +119,16 @@ export function Privacy({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Privacy & Data" subtitle="Consent receipts · DPDP Act" showBack onBack={onBack} />
+      <Header title="Privacy & Data" subtitle="Your data overview" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           <div className="rounded-2xl bg-gradient-to-br from-primary to-indigo-700 text-white p-5">
             <div className="flex items-center gap-2">
               <FileText className="size-5" />
-              <div className="text-sm" style={{ fontWeight: 700 }}>Every consent, on record</div>
+              <div className="text-sm" style={{ fontWeight: 700 }}>Your data at a glance</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              Under the DPDP Act, 2023 you have the right to know exactly what data is processed, why, by whom, and for how long. Every consent you've given LiveSync — bank, document, AI, auth — is listed below with a downloadable receipt.
+              See exactly what data LiveSync processes, why, and by whom. Every data source — bank connections, documents, AI, auth — is listed below and can be downloaded.
             </p>
           </div>
 
@@ -150,7 +150,7 @@ export function Privacy({ onBack }: { onBack: () => void }) {
           {loading ? (
             <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
           ) : (
-            <Section title={`Active consents · ${receipts.length}`}>
+            <Section title={`Data sources · ${receipts.length}`}>
               {receipts.map((r) => {
                 const Icon = icons[r.type];
                 return (
@@ -169,21 +169,20 @@ export function Privacy({ onBack }: { onBack: () => void }) {
             </Section>
           )}
 
-          <Section title="Your rights">
-            <RightRow title="Right to access" body="Request a copy of all personal data we hold. Use Export in Security." />
-            <RightRow title="Right to correction" body="Edit transactions for 5 minutes; for older entries, add an offsetting transaction or contact support." />
-            <RightRow title="Right to erasure" body="Delete your account from Security → Delete my account. Completes within 30 days per DPDP §12." />
-            <RightRow title="Right to grievance" body="Email privacy@livesync.app. Our Data Protection Officer replies within 7 business days." />
+          <Section title="Your data rights">
+            <RightRow title="Export your data" body="Download all your personal data as JSON from Security → Export." />
+            <RightRow title="Edit your data" body="Edit transactions for 5 minutes after creation. For older entries, add an offsetting transaction or contact support." />
+            <RightRow title="Delete your data" body="Delete your account and all data from Security → Delete my account. Deletion is immediate and irreversible." />
+            <RightRow title="Get support" body="Email privacy@livesync.app for any data-related questions. We respond within 7 business days." />
           </Section>
 
           <div className="bg-card rounded-2xl p-4 border border-border/60 text-xs text-muted-foreground leading-relaxed">
             <div className="flex items-center gap-2 text-foreground mb-2" style={{ fontWeight: 700 }}>
               <Clock className="size-3.5 text-primary" /> Retention
             </div>
-            Transactions and goals: until you delete them or close the account.
-            AI prompts/responses: 90 days for safety review, then purged.
-            Auth logs: 12 months for fraud investigation.
-            Backups: encrypted, rotated every 30 days.
+            Transactions and goals: stored until you delete them or close your account.
+            AI prompts: not stored after processing — responses are ephemeral.
+            Auth sessions: managed by Supabase Auth, invalidated on sign-out.
           </div>
         </div>
       </Screen>

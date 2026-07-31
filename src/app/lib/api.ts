@@ -1,7 +1,37 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { nativeStorage } from "./nativeStorage";
 
 const STORAGE_KEY = "livesync-auth";
+
+/** All localStorage / sessionStorage keys owned by LiveSync — cleared on sign-out */
+const LIVESYNC_CACHE_KEYS = [
+  "livesync_news_cache",
+  "livesync_news_notif_time",
+  "livesync_news_notif_enabled",
+  "livesync-notified",           // sessionStorage loan notifications
+];
+
+/** Wipe all local cache so no data bleeds between sign-in/sign-out sessions */
+export function clearLocalCache() {
+  try {
+    LIVESYNC_CACHE_KEYS.forEach((k) => {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
+    });
+    // Also clear any leftover livesync_ prefixed keys
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("livesync"))
+      .forEach((k) => localStorage.removeItem(k));
+    Object.keys(sessionStorage)
+      .filter((k) => k.startsWith("livesync"))
+      .forEach((k) => sessionStorage.removeItem(k));
+    
+    // Clear native preferences storage key
+    nativeStorage.removeItem(STORAGE_KEY);
+  } catch { /* ignore – private browsing may throw */ }
+}
+
 
 let _client: SupabaseClient | null = null;
 export function supabase(): SupabaseClient {
@@ -9,7 +39,14 @@ export function supabase(): SupabaseClient {
     _client = createClient(
       `https://${projectId}.supabase.co`,
       publicAnonKey,
-      { auth: { storageKey: STORAGE_KEY, persistSession: true, autoRefreshToken: true } },
+      {
+        auth: {
+          storageKey: STORAGE_KEY,
+          storage: nativeStorage,
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      },
     );
   }
   return _client;
@@ -45,7 +82,10 @@ export const api = {
     }
     return data;
   },
-  signout: () => supabase().auth.signOut(),
+  signout: async () => {
+    clearLocalCache();
+    return supabase().auth.signOut();
+  },
   resetPassword: (email: string) => supabase().auth.resetPasswordForEmail(email, { redirectTo: window.location.origin }),
   updatePassword: (password: string) => supabase().auth.updateUser({ password }),
   session: () => supabase().auth.getSession().then((r) => r.data.session),
@@ -74,7 +114,12 @@ export const api = {
     return body.item;
   },
   documentUrl: (id: string) => req(`/documents/${id}/url`).then((r) => r.url as string),
-  deleteAccount: () => req("/me/delete", { method: "POST" }),
+  deleteAccount: async () => {
+    const result = await req("/me/delete", { method: "POST" });
+    clearLocalCache();
+    await supabase().auth.signOut();
+    return result;
+  },
   notifications: () => req("/me/notifications").then((r) => r.items as Array<{ id: string; title: string; body?: string; kind: string; at: string; read: boolean }>),
   markNotificationsRead: () => req("/me/notifications/read", { method: "POST" }),
   subscription: () => req("/me/subscription"),

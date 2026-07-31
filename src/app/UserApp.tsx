@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import { Loader2 } from "lucide-react";
 import { BottomNav } from "./components/BottomNav";
 import { QuickAdd } from "./components/QuickAdd";
+import { InAppBanner } from "./components/InAppBanner";
 import { ScreenId } from "./components/types";
 import { Dashboard } from "./components/screens/Dashboard";
 import { Transactions } from "./components/screens/Transactions";
 import { Goals } from "./components/screens/Goals";
+import { BucketsList } from "./components/screens/BucketsList";
+import { BucketDetail } from "./components/screens/BucketDetail";
 import { Coach } from "./components/screens/Coach";
 import { Profile } from "./components/screens/Profile";
 import { Health } from "./components/screens/Health";
@@ -46,6 +49,13 @@ import { Gold } from "./components/screens/Gold";
 import { PropertyScreen } from "./components/screens/Property";
 import { CreditScore } from "./components/screens/CreditScore";
 import { FraudAlerts } from "./components/screens/FraudAlerts";
+import { FinancialNews } from "./components/screens/FinancialNews";
+import { PrivacyPolicy } from "./components/screens/PrivacyPolicy";
+import { TermsConditions } from "./components/screens/TermsConditions";
+import { ContactUs } from "./components/screens/ContactUs";
+import { DataSafety } from "./components/screens/DataSafety";
+import { ItrFiling } from "./components/screens/ItrFiling";
+import { CloudBackup } from "./components/screens/CloudBackup";
 
 const tabRoots: ScreenId[] = ["dashboard", "transactions", "goals", "coach", "profile"];
 
@@ -146,9 +156,37 @@ function UpdatePassword({ onDone }: { onDone: () => void }) {
 
 function AuthedShell() {
   const navigate = useNavigate();
-  const { screen: routeScreen } = useParams<{ screen?: string }>();
+  const { screen: routeScreen, id } = useParams<{ screen?: string; id?: string }>();
   const [addOpen, setAddOpen] = useState(false);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+
+  // ─── Hardware back button closes QuickAdd before navigating away ──────
+  const openQuickAdd = useCallback(() => {
+    if (addOpen) return;
+    // Push a dummy history entry so back = close modal
+    window.history.pushState({ quickAdd: true }, "");
+    setAddOpen(true);
+  }, [addOpen]);
+
+  const closeQuickAdd = useCallback(() => {
+    if (!addOpen) return;
+    setAddOpen(false);
+    // Pop the dummy state we pushed (only if it's still there)
+    if (window.history.state?.quickAdd) {
+      window.history.back();
+    }
+  }, [addOpen]);
+
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      // If the modal is open and user pressed back, close it
+      if (addOpen) {
+        setAddOpen(false);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [addOpen]);
 
   useEffect(() => {
     (async () => {
@@ -188,9 +226,14 @@ function AuthedShell() {
 
   return (
     <>
+      {/* ── In-app notification banner ── */}
+      <InAppBanner />
+
       {screen === "dashboard" && <Dashboard go={go} />}
       {screen === "transactions" && <Transactions />}
       {screen === "goals" && <Goals />}
+      {screen === "buckets" && !id && <BucketsList onBack={onBack} />}
+      {screen === "buckets" && id && <BucketDetail onBack={() => navigate("/buckets")} />}
       {screen === "coach" && <Coach />}
       {screen === "profile" && <Profile go={go} />}
       {screen === "health" && <Health onBack={onBack} />}
@@ -225,9 +268,16 @@ function AuthedShell() {
       {screen === "property" && <PropertyScreen onBack={onBack} />}
       {screen === "creditscore" && <CreditScore onBack={onBack} />}
       {screen === "fraud" && <FraudAlerts onBack={onBack} />}
+      {screen === "news" && <FinancialNews onBack={onBack} />}
+      {screen === "itr-filing" && <ItrFiling onBack={onBack} />}
+      {screen === "privacy-policy" && <PrivacyPolicy onBack={onBack} />}
+      {screen === "terms" && <TermsConditions onBack={onBack} />}
+      {screen === "contact" && <ContactUs onBack={onBack} />}
+      {screen === "data-safety" && <DataSafety onBack={onBack} onDeleteSuccess={() => { /* api.onAuth listener auto-updates authed */ }} />}
+      {screen === "cloud-backup" && <CloudBackup onBack={onBack} />}
 
-      <BottomNav active={activeTab} onChange={go} onAdd={() => setAddOpen(true)} />
-      <QuickAdd open={addOpen} onClose={() => setAddOpen(false)} />
+      <BottomNav active={activeTab} onChange={go} onAdd={openQuickAdd} />
+      <QuickAdd open={addOpen} onClose={closeQuickAdd} />
     </>
   );
 }
@@ -236,6 +286,7 @@ const screenIds: ScreenId[] = [
   "dashboard",
   "transactions",
   "goals",
+  "buckets",
   "coach",
   "profile",
   "budgets",
@@ -271,6 +322,13 @@ const screenIds: ScreenId[] = [
   "property",
   "creditscore",
   "fraud",
+  "news",
+  "itr-filing",
+  "privacy-policy",
+  "terms",
+  "contact",
+  "data-safety",
+  "cloud-backup",
 ];
 
 function isScreenId(value: string): value is ScreenId {

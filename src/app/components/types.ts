@@ -2,6 +2,7 @@ export type ScreenId =
   | "dashboard"
   | "transactions"
   | "goals"
+  | "buckets"
   | "coach"
   | "profile"
   | "budgets"
@@ -36,7 +37,15 @@ export type ScreenId =
   | "property"
   | "creditscore"
   | "fraud"
-  | "pricing";
+  | "pricing"
+  | "news"
+  | "itr-filing"
+  | "privacy-policy"
+  | "terms"
+  | "contact"
+  | "data-safety"
+  | "cloud-backup";
+
 
 export const inr = (n: number) =>
   "₹" + Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 });

@@ -42,7 +42,7 @@ function formatMonthName(monthStr: string): string {
 }
 
 export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
-  const { transactions, subscriptions, assets, liabilities, goals, selectedMonth, setSelectedMonth } = useStore();
+  const { transactions, subscriptions, assets, liabilities, buckets, selectedMonth, setSelectedMonth } = useStore();
   const [userName, setUserName] = useState("there");
 
   // Fetch real user name from Supabase auth
@@ -97,11 +97,11 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
     let score = 50; // base score
     if (monthlySavings > 0 && monthlyIncome > 0) score += Math.min(20, (pct / 30) * 20);
     if (livenw > 0) score += 10;
-    if (goals.length > 0) score += 5;
+    if (buckets.length > 0) score += 5;
     if (leaks.totalAnnual < monthlyIncome * 0.1) score += 10;
     if (monthlyExpenses > 0 && monthlyIncome > monthlyExpenses) score += 5;
     return Math.min(100, Math.round(score));
-  }, [monthlySavings, monthlyIncome, pct, livenw, goals, leaks, monthlyExpenses]);
+  }, [monthlySavings, monthlyIncome, pct, livenw, buckets, leaks, monthlyExpenses]);
 
   const emergencyMonths = useMemo(() => {
     if (monthlyExpenses <= 0) return 0;
@@ -135,16 +135,16 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
     if (pct > 30) insights.push({ id: "save", title: "Great savings rate!", body: `You're saving ${pct.toFixed(0)}% of your income this month.`, action: "View goals", severity: "success" });
     if (pct < 10 && monthlyIncome > 0) insights.push({ id: "low-save", title: "Low savings this month", body: `Only ${pct.toFixed(0)}% savings rate. Consider cutting discretionary spending.`, action: "View budgets", severity: "warning" });
     if (leaks.totalAnnual > 5000) insights.push({ id: "leak", title: `₹${Math.round(leaks.totalAnnual).toLocaleString("en-IN")} annual leakage`, body: "Detected potential money leaks in subscriptions and recurring charges.", action: "View leaks", severity: "danger" });
-    if (goals.length > 0) {
-      const topGoal = goals[0];
-      const gPct = topGoal.target > 0 ? (topGoal.current / topGoal.target) * 100 : 0;
-      insights.push({ id: "goal", title: `${topGoal.name}: ${gPct.toFixed(0)}% done`, body: `₹${topGoal.current.toLocaleString("en-IN")} of ₹${topGoal.target.toLocaleString("en-IN")} saved.`, action: "View goals", severity: gPct > 50 ? "success" : "warning" });
+    if (buckets.length > 0) {
+      const topGoal = buckets[0];
+      const gPct = topGoal.targetAmount > 0 ? (topGoal.savedAmount / topGoal.targetAmount) * 100 : 0;
+      insights.push({ id: "goal", title: `${topGoal.name}: ${gPct.toFixed(0)}% done`, body: `₹${topGoal.savedAmount.toLocaleString("en-IN")} of ₹${topGoal.targetAmount.toLocaleString("en-IN")} saved.`, action: "View buckets", severity: gPct > 50 ? "success" : "warning" });
     }
     if (insights.length === 0 && transactions.length === 0) {
       insights.push({ id: "start", title: "Welcome to LiveSync!", body: "Add your first transaction to start getting personalized insights.", action: "Get started", severity: "success" });
     }
     return insights.slice(0, 3);
-  }, [pct, monthlyIncome, leaks, goals, transactions]);
+  }, [pct, monthlyIncome, leaks, buckets, transactions]);
 
   // Empty state check
   const hasData = transactions.length > 0;
@@ -287,11 +287,11 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
 
           {/* Goals */}
           <Card>
-            <SectionHead title="Your goals" onMore={() => go("goals")} />
-            {goals.length > 0 ? (
+            <SectionHead title="Your goals" onMore={() => go("buckets")} />
+            {buckets.length > 0 ? (
               <div className="space-y-3">
-                {goals.slice(0, 2).map((g) => {
-                  const p = g.target > 0 ? (g.current / g.target) * 100 : 0;
+                {buckets.slice(0, 2).map((g) => {
+                  const p = g.targetAmount > 0 ? (g.savedAmount / g.targetAmount) * 100 : 0;
                   return (
                     <div key={g.id}>
                       <div className="flex justify-between items-baseline mb-1.5">
@@ -306,7 +306,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
                 })}
               </div>
             ) : (
-              <button onClick={() => go("goals")} className="w-full flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground hover:text-primary transition">
+              <button onClick={() => go("buckets")} className="w-full flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground hover:text-primary transition">
                 <PlusCircle className="size-4" /> Set your first savings goal
               </button>
             )}

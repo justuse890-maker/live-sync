@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Check, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
+import { LiveSyncLogoMark } from "./LiveSyncLogo";
 
 type Profile = {
   id: "onboarding";
@@ -127,11 +128,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 function Welcome({ onStart }: { onStart: () => void }) {
   return (
     <div className="flex flex-col items-center text-center pt-10 space-y-5">
-      <div className="size-16 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-lg">
-        <Sparkles className="size-7" />
+      <div className="size-16 rounded-2xl bg-white shadow-xl border border-slate-100 p-2.5 flex items-center justify-center">
+        <LiveSyncLogoMark className="size-full" />
       </div>
       <div>
-        <h1 className="text-2xl font-semibold mb-1">Welcome to LiveSync</h1>
+        <h1 className="text-2xl font-bold font-display mb-1">
+          Welcome to LiveSync <span className="text-[#0066FF]">AI</span>
+        </h1>
         <p className="text-sm text-muted-foreground max-w-xs mx-auto">
           Four quick questions — about 30 seconds — so the app meets you where you are. You can change any answer later in Settings.
         </p>

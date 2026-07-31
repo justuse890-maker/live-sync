@@ -69,16 +69,16 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Document Vault" subtitle="AES-256 encrypted" showBack onBack={onBack} />
+      <Header title="Document Vault" subtitle="Secure private storage" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           <div className="rounded-2xl bg-gradient-to-br from-primary to-indigo-700 text-white p-5">
             <div className="flex items-center gap-2">
               <ShieldCheck className="size-5" />
-              <div className="text-sm" style={{ fontWeight: 700 }}>Private, encrypted storage</div>
+              <div className="text-sm" style={{ fontWeight: 700 }}>Private document storage</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              Files are encrypted at rest (AES-256) and accessed via time-limited signed URLs (60s). Only you can view them. We never share documents with third parties or AI models.
+              Files are stored in a private cloud bucket and accessed via time-limited signed URLs (60s). Only you can view them. Documents are never shared with third parties or AI models.
             </p>
             <a href="https://www.digilocker.gov.in/" target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs text-white/95 underline">
               Prefer govt-issued copies? Use DigiLocker <ExternalLink className="size-3" />
@@ -120,9 +120,8 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
               <Lock className="size-3.5 text-primary" /> Storage hygiene
             </div>
             <div>• Max 25 MB per file. PDF, JPG, PNG accepted.</div>
-            <div>• Files are scanned for malware on upload.</div>
             <div>• Expired consent or deletion removes both metadata and the file blob.</div>
-            <div>• Under DPDP Act 2023, you may export or erase your vault at any time from Security → Data rights.</div>
+            <div>• You can export or erase your vault at any time from Security → Your data.</div>
           </div>
         </div>
       </Screen>
@@ -221,7 +220,7 @@ function UploadSheet({ onClose, onDone }: { onClose: () => void; onDone: (d: Doc
         {err && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-2.5 mb-3">{err}</div>}
 
         <button onClick={submit} disabled={!file || busy} className="w-full bg-primary text-primary-foreground rounded-xl py-3 text-sm disabled:opacity-40 flex items-center justify-center gap-2" style={{ fontWeight: 700 }}>
-          {busy && <Loader2 className="size-4 animate-spin" />} Encrypt & upload
+          {busy && <Loader2 className="size-4 animate-spin" />} Upload securely
         </button>
       </div>
     </div>

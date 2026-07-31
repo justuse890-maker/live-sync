@@ -3,11 +3,15 @@
  * Central bridge for all Capacitor native features.
  * Gracefully falls back to no-ops in browser/dev environments.
  */
+import { showBanner } from '../components/InAppBanner';
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 export const isNative = () =>
   typeof (window as any).Capacitor !== 'undefined' &&
   (window as any).Capacitor?.isNativePlatform?.() === true;
+
+export const getPlatform = (): string =>
+  (window as any).Capacitor?.getPlatform?.() ?? 'web';
 
 // ─── Push Notifications ──────────────────────────────────────────────────────
 export async function initPushNotifications(onToken?: (token: string) => void) {
@@ -37,10 +41,24 @@ export async function initPushNotifications(onToken?: (token: string) => void) {
 
     PushNotifications.addListener('pushNotificationReceived', (notification) => {
       console.log('Push received (foreground):', notification);
+      // Show in-app banner for foreground push notifications
+      showBanner({
+        title: notification.title ?? 'LiveSync AI',
+        body: notification.body ?? '',
+      });
     });
 
     PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
       console.log('Push action:', action);
+    });
+
+    // Listen for local notifications received while app is in foreground
+    LocalNotifications.addListener('localNotificationReceived', (notification) => {
+      console.log('Local notification received (foreground):', notification);
+      showBanner({
+        title: notification.title ?? 'LiveSync AI',
+        body: notification.body ?? '',
+      });
     });
 
     // Create notification channels (Android 8+)
@@ -132,8 +150,18 @@ export async function initStatusBar() {
   if (!isNative()) return;
   try {
     const { StatusBar, Style } = await import('@capacitor/status-bar');
+
+    // Android: prevent WebView from rendering underneath the status bar.
+    // On Android 15+ (SDK 35+), edge-to-edge is forced by the OS; the
+    // adjustMarginsForEdgeToEdge config key in capacitor.config.json
+    // handles that layer. This call covers older Android versions.
+    if (getPlatform() === 'android') {
+      await StatusBar.setOverlaysWebView({ overlay: false });
+      await StatusBar.setBackgroundColor({ color: '#0f172a' });
+    }
+
+    // Light icons on the dark status bar (works on both platforms).
     await StatusBar.setStyle({ style: Style.Dark });
-    await StatusBar.setBackgroundColor({ color: '#0f172a' });
   } catch (err) {
     console.warn('StatusBar init failed:', err);
   }
@@ -189,5 +217,14 @@ export async function hapticError() {
   try {
     const { Haptics, NotificationType } = await import('@capacitor/haptics');
     await Haptics.notification({ type: NotificationType.Error });
+  } catch {}
+}
+
+/** Light tap feedback for buttons / nav items. No-op on web. */
+export async function hapticLight() {
+  if (!isNative()) return;
+  try {
+    const { Haptics, ImpactStyle } = await import('@capacitor/haptics');
+    await Haptics.impact({ style: ImpactStyle.Light });
   } catch {}
 }

@@ -22,7 +22,8 @@ export default function AdminApp() {
       const { data } = await supabase().auth.getSession();
       if (!data.session) { setAuthed(false); return; }
       const r = await adminApi.me();
-      setMe({ email: r.email });
+      // /admin/me returns { admin: { id, email } }
+      setMe({ email: r.admin?.email ?? r.email ?? "Admin" });
       setAuthed(true);
     } catch {
       setAuthed(false);

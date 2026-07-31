@@ -1,0 +1,56 @@
+/*
+ * globals.css
+ * Cross-platform safe-area & adaptive viewport height fixes.
+ *
+ * Works in concert with:
+ *   - index.html  → viewport-fit=cover  (unlocks env() on iOS)
+ *   - native.ts   → StatusBar.setOverlaysWebView({ overlay: false })  (Android)
+ *   - capacitor.config.json → android.adjustMarginsForEdgeToEdge (Android 15+)
+ *   - main.tsx    → visualViewport listener sets --app-height  (JS fallback)
+ */
+
+/* ─── Safe-area inset tokens ─────────────────────────────────────────────── */
+/* The env() values are populated by the browser from the device's notch /
+   Dynamic Island / rounded-corner geometry. They are 0px on flat devices. */
+:root {
+  --safe-top:    env(safe-area-inset-top,    0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left:   env(safe-area-inset-left,   0px);
+  --safe-right:  env(safe-area-inset-right,  0px);
+}
+
+/* ─── App shell: full-screen container ───────────────────────────────────── */
+/* Priority (highest → lowest):
+   1. 100dvh  – modern dynamic viewport unit, adjusts as keyboard/UI appears
+   2. --app-height – JS fallback set by visualViewport listener in main.tsx
+   3. 100vh   – last-resort for very old engines
+*/
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* ─── Status-bar / notch padding for always-visible headers ─────────────── */
+/* Apply .safe-top to any fixed/sticky header that sits at the top of the
+   screen (e.g. the page header in dashboard screens). */
+.safe-top {
+  padding-top: var(--safe-top);
+}
+
+.safe-bottom {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* ─── Full-screen containers: adaptive height ────────────────────────────── */
+.h-dvh {
+  height: 100vh;            /* fallback */
+  height: var(--app-height, 100dvh); /* JS-set var > dvh > vh */
+}
+
+.min-h-dvh {
+  min-height: 100vh;        /* fallback */
+  min-height: var(--app-height, 100dvh);
+}

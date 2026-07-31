@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { X, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2, Plus, Banknote, Smartphone, CreditCard, Wallet, MoreHorizontal, Trash2, Pencil, Mic, Camera } from "lucide-react";
 import { PaymentMode, PaymentSplit, useStore } from "../store";
 import { CaptureVoiceScan } from "./CaptureVoiceScan";
+import { hapticSuccess, hapticLight } from "../lib/native";
 
 const paymentMeta: Record<PaymentMode, { label: string; icon: any; tint: string }> = {
   cash:   { label: "Cash",   icon: Banknote,         tint: "#10B981" },
@@ -56,6 +57,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       payments: payments.length ? payments : undefined,
       notes: notes || undefined,
     });
+    hapticSuccess();
     setSaving(false);
     reset();
     onClose();
@@ -77,7 +79,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       <div onClick={(e) => e.stopPropagation()} className="relative w-full max-h-[92%] overflow-y-auto bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display" style={{ fontSize: 18, fontWeight: 700 }}>Add transaction</div>
-          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center">
+          <button onClick={() => { hapticLight(); onClose(); }} className="size-8 rounded-full bg-muted flex items-center justify-center active:scale-90 transition-transform duration-150">
             <X className="size-4" />
           </button>
         </div>
@@ -232,7 +234,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
         <button
           onClick={save}
           disabled={!amount || saving || !splitOk}
-          className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 flex items-center justify-center gap-2 mt-1"
+          className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 flex items-center justify-center gap-2 mt-1 active:scale-[0.97] transition-transform duration-150"
           style={{ fontWeight: 700 }}
         >
           {saving && <Loader2 className="size-4 animate-spin" />}

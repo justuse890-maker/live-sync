@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader2, ShieldCheck, AlertTriangle } from "lucide-react";
-import { supabase } from "../lib/adminApi";
+import { supabase, adminApi } from "../lib/adminApi";
 
 export function AdminAuth({ onAuthed }: { onAuthed: () => void }) {
   const [email, setEmail] = useState("");
@@ -15,6 +15,8 @@ export function AdminAuth({ onAuthed }: { onAuthed: () => void }) {
     try {
       const { error } = await supabase().auth.signInWithPassword({ email, password });
       if (error) throw error;
+      // Verify this account is actually an admin (listed in ADMIN_EMAILS env var)
+      await adminApi.me();
       onAuthed();
     } catch (e: any) {
       console.error("Admin auth failed:", e);

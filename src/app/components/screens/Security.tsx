@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Shield, Fingerprint, KeyRound, Smartphone, Download, Trash2, Brain, Eye, EyeOff, Server, Clock, AlertTriangle, Loader2, CheckCircle2, Globe } from "lucide-react";
+import { Shield, Fingerprint, Download, Trash2, Brain, Eye, EyeOff, Server, AlertTriangle, Loader2, CheckCircle2, Globe } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { api, supabase } from "../../lib/api";
 import { registerBiometric, clearBiometric, platformAuthenticatorAvailable, isWebAuthnSupported } from "../../lib/webauthn";
@@ -11,8 +11,6 @@ import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 type Settings = {
   id: string;
   biometric: boolean;
-  twoFA: boolean;
-  appLockMinutes: number;
   aiOptIn: boolean;
   aiShareCategoriesOnly: boolean;
   marketingOptIn: boolean;
@@ -21,8 +19,6 @@ type Settings = {
 const DEFAULTS: Settings = {
   id: "preferences",
   biometric: false,
-  twoFA: false,
-  appLockMinutes: 5,
   aiOptIn: true,
   aiShareCategoriesOnly: true,
   marketingOptIn: false,
@@ -127,16 +123,16 @@ export function Security({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Security & Privacy" subtitle="DPDP Act 2023 compliant" showBack onBack={onBack} />
+      <Header title="Security & Privacy" subtitle="Your data protection settings" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           <div className="rounded-2xl bg-gradient-to-br from-primary to-indigo-700 text-white p-5">
             <div className="flex items-center gap-2">
               <Shield className="size-5" />
-              <div className="text-sm" style={{ fontWeight: 700 }}>Bank-grade protections</div>
+              <div className="text-sm" style={{ fontWeight: 700 }}>Cloud security</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              TLS 1.3 in transit, AES-256 at rest, India data residency (Mumbai). We follow the Digital Personal Data Protection Act, 2023 — you control consent, access, and erasure.
+              TLS 1.3 encryption in transit, AES-256 encryption at rest (Supabase platform-level). All data is user-isolated via authenticated API access. You can export or delete your data at any time.
             </p>
           </div>
 
@@ -144,8 +140,6 @@ export function Security({ onBack }: { onBack: () => void }) {
 
           <Section title="Account access">
             <Toggle icon={bioBusy ? <Loader2 className="size-4 animate-spin" /> : <Fingerprint className="size-4" />} label="Biometric unlock" sub={bioErr || (s.biometric ? "Passkey registered on this device" : "WebAuthn / device passkey")} value={s.biometric} onChange={setupBiometric} />
-            <Toggle icon={<KeyRound className="size-4" />} label="Two-factor authentication" sub="TOTP authenticator app" value={s.twoFA} onChange={() => update({ twoFA: !s.twoFA })} />
-            <Select icon={<Clock className="size-4" />} label="Auto-lock after inactivity" value={s.appLockMinutes} onChange={(n) => update({ appLockMinutes: n })} options={[1, 5, 15, 30, 60]} suffix=" min" />
           </Section>
 
           <Section title="AI data sharing">
@@ -155,7 +149,7 @@ export function Security({ onBack }: { onBack: () => void }) {
                 <span className="text-sm">How we use AI</span>
               </div>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                LiveSync uses AI to generate insights, coaching tips and category suggestions. We process the <span className="text-foreground" style={{ fontWeight: 600 }}>minimum data necessary</span> on Indian servers, with strict redaction.
+                LiveSync uses AI to generate insights, coaching tips and category suggestions. We process the <span className="text-foreground" style={{ fontWeight: 600 }}>minimum data necessary</span>, with strict redaction.
               </p>
             </div>
             <SharingRow ok label="Aggregated category totals (e.g. ₹4,200 on Food this week)" />
@@ -169,27 +163,22 @@ export function Security({ onBack }: { onBack: () => void }) {
             </div>
             <div className="p-3 bg-muted/40 border-t border-border/60 text-[11px] text-muted-foreground leading-relaxed">
               <div className="flex items-center gap-1.5 mb-1 text-foreground" style={{ fontWeight: 600 }}>
-                <Server className="size-3" /> Where AI runs
+                <Server className="size-3" /> How AI works
               </div>
-              Inference happens in our Mumbai (ap-south-1) region. Prompts and responses are retained for 90 days for safety review, then deleted. No data is used to train third-party models.
+              Server-side AI features use Google Gemini. Bring-your-own-key mode uses Groq (Llama). AI prompts are not stored after processing. No data is used to train third-party models.
             </div>
           </Section>
 
-          <Section title="Active sessions">
-            <SessionRow device="iPhone · Mumbai" current />
-            <SessionRow device="Chrome on macOS · Bengaluru" />
-          </Section>
-
-          <Section title="Your data rights (DPDP Act)">
+          <Section title="Your data">
             <ActionRow icon={<Download className="size-4" />} label="Export all my data" sub="JSON of transactions, loans, goals, documents" onClick={exportData} />
-            <ActionRow icon={<Trash2 className="size-4" />} label="Delete my account & data" sub="Irreversible — auth, KV records, vault files" danger onClick={() => setConfirmDelete(true)} />
+            <ActionRow icon={<Trash2 className="size-4" />} label="Delete my account & data" sub="Irreversible — auth, records, vault files" danger onClick={() => setConfirmDelete(true)} />
           </Section>
 
           <div className="bg-card rounded-2xl p-4 border border-border/60 text-xs text-muted-foreground leading-relaxed">
             <div className="flex items-center gap-2 text-foreground mb-2" style={{ fontWeight: 700 }}>
-              <Smartphone className="size-3.5 text-primary" /> Grievance officer
+              <Shield className="size-3.5 text-primary" /> Support
             </div>
-            For privacy concerns under the DPDP Act, email <span className="text-foreground">privacy@livesync.app</span>. We respond within 7 business days.
+            For privacy concerns, email <span className="text-foreground">privacy@livesync.app</span>. We respond within 7 business days.
           </div>
         </div>
       </Screen>
@@ -202,7 +191,7 @@ export function Security({ onBack }: { onBack: () => void }) {
               <AlertTriangle className="size-4" /> Permanently delete account?
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed mb-4">
-              This erases your transactions, loans, goals, documents, and revokes all consents. Per DPDP Act §12, this completes within 30 days. This cannot be undone.
+              This erases your transactions, loans, goals, documents, and sign-in credentials. Deletion completes immediately. This cannot be undone.
             </p>
             <div className="flex gap-2">
               <button onClick={() => setConfirmDelete(false)} className="flex-1 bg-muted rounded-xl py-3 text-sm" style={{ fontWeight: 600 }}>Cancel</button>
@@ -239,17 +228,7 @@ function Toggle({ icon, label, sub, value, onChange, flat }: { icon: React.React
   );
 }
 
-function Select({ icon, label, value, onChange, options, suffix }: { icon: React.ReactNode; label: string; value: number; onChange: (n: number) => void; options: number[]; suffix?: string }) {
-  return (
-    <div className="flex items-center gap-3 p-3.5 border-b border-border/60 last:border-0">
-      <div className="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">{icon}</div>
-      <div className="flex-1 text-sm" style={{ fontWeight: 600 }}>{label}</div>
-      <select value={value} onChange={(e) => onChange(Number(e.target.value))} className="bg-muted/60 rounded-lg px-2.5 py-1.5 text-sm">
-        {options.map((o) => <option key={o} value={o}>{o}{suffix}</option>)}
-      </select>
-    </div>
-  );
-}
+
 
 function SharingRow({ label, ok, warn, never }: { label: string; ok: boolean; warn?: boolean; never?: boolean }) {
   const tone = never ? "text-rose-600" : ok ? "text-emerald-600" : warn ? "text-amber-600" : "text-muted-foreground";
@@ -263,20 +242,7 @@ function SharingRow({ label, ok, warn, never }: { label: string; ok: boolean; wa
   );
 }
 
-function SessionRow({ device, current }: { device: string; current?: boolean }) {
-  return (
-    <div className="flex items-center gap-3 p-3.5 border-b border-border/60 last:border-0">
-      <div className="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
-        <Smartphone className="size-4" />
-      </div>
-      <div className="flex-1">
-        <div className="text-sm" style={{ fontWeight: 600 }}>{device}</div>
-        <div className="text-xs text-muted-foreground">{current ? "Current device · active now" : "Last active 2 days ago"}</div>
-      </div>
-      {!current && <button className="text-xs text-rose-600" style={{ fontWeight: 600 }}>Sign out</button>}
-    </div>
-  );
-}
+
 
 function CountrySection() {
   const { country, pack, refresh } = useCountry();
