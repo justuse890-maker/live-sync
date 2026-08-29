@@ -159,7 +159,7 @@ export function CloudBackup({ onBack }: { onBack: () => void }) {
               <div className="text-sm" style={{ fontWeight: 700 }}>Encrypted cloud backup</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              Back up your financial data to Google Drive with AES-256-GCM encryption. Only you can decrypt it — even Google can't read your data. If you reinstall the app, restore from your backup to get everything back.
+              Back up your financial data to Google Drive with AES-256-GCM encryption before upload. Keep your passphrase safe: it is required to decrypt the backup in the app.
             </p>
           </div>
 
@@ -326,7 +326,7 @@ export function CloudBackup({ onBack }: { onBack: () => void }) {
                 </div>
                 <div>• Your data is encrypted with AES-256-GCM using a key derived from your passphrase (PBKDF2, 600K iterations).</div>
                 <div>• The encrypted file is uploaded to a Google Drive folder only this app can access.</div>
-                <div>• Google cannot read your data. Without the passphrase, the backup is unreadable.</div>
+                <div>• The backup is encrypted before upload. Without the passphrase, it cannot be decrypted by this app.</div>
                 <div>• On restore, the backup is downloaded, decrypted locally, and synced to your account.</div>
               </div>
             </>

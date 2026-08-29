@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Shield, Plane, Bike, Home, Plus, Sparkles, Trash2, PiggyBank, Car, GraduationCap, Laptop, X, ArrowUpCircle } from "lucide-react";
+import { Shield, Plane, Bike, Home, Plus, Sparkles, Trash2, PiggyBank, Car, GraduationCap, Laptop, X, ArrowUpCircle, Calendar, AlertTriangle } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { useStore, Goal } from "../../store";
+import { getGoalDeadlineMetrics, getQuickDatePreset, isValidGoalDate } from "../../lib/dateUtils";
 
 const iconMap: Record<string, any> = { Shield, Plane, Bike, Home, PiggyBank, Car, GraduationCap, Laptop };
 
@@ -10,6 +11,7 @@ export function Goals({ onBack }: { onBack?: () => void }) {
   const { goals, addGoal, updateGoal, removeGoal } = useStore();
   const [addOpen, setAddOpen] = useState(false);
   const [contribGoal, setContribGoal] = useState<Goal | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   
   // New Goal Form States
   const [formName, setFormName] = useState("");
@@ -27,38 +29,52 @@ export function Goals({ onBack }: { onBack?: () => void }) {
   const pct = target > 0 ? (total / target) * 100 : 0;
 
   const handleSaveGoal = async () => {
+    if (submitting) return;
     const targetNum = Number(formTarget);
     if (!formName.trim() || !targetNum || targetNum <= 0) return;
-    
-    await addGoal({
-      name: formName.trim(),
-      target: targetNum,
-      current: Number(formCurrent) || 0,
-      deadline: formDeadline || "Dec 2026",
-      icon: formIcon,
-      color: formColor
-    });
+    setSubmitting(true);
+    try {
+      await addGoal({
+        name: formName.trim(),
+        target: targetNum,
+        current: Number(formCurrent) || 0,
+        deadline: formDeadline || getQuickDatePreset(12),
+        icon: formIcon,
+        color: formColor
+      });
 
-    setAddOpen(false);
-    // Reset fields
-    setFormName("");
-    setFormTarget("");
-    setFormCurrent("");
-    setFormDeadline("");
+      setAddOpen(false);
+      // Reset fields
+      setFormName("");
+      setFormTarget("");
+      setFormCurrent("");
+      setFormDeadline("");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleContribute = async () => {
+    if (submitting) return;
     const amt = Number(contribAmt);
     if (contribGoal && amt > 0) {
-      const newCurrent = Math.min(contribGoal.current + amt, contribGoal.target);
-      await updateGoal({
-        ...contribGoal,
-        current: newCurrent
-      });
-      setContribGoal(null);
-      setContribAmt("");
+      setSubmitting(true);
+      try {
+        const newCurrent = Math.min(contribGoal.current + amt, contribGoal.target);
+        await updateGoal({
+          ...contribGoal,
+          current: newCurrent
+        });
+        setContribGoal(null);
+        setContribAmt("");
+      } finally {
+        setSubmitting(false);
+      }
     }
   };
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const formDeadlineMetrics = getGoalDeadlineMetrics(formDeadline, Number(formTarget) || 0, Number(formCurrent) || 0);
 
   return (
     <>
@@ -93,11 +109,7 @@ export function Goals({ onBack }: { onBack?: () => void }) {
               const Icon = iconMap[g.icon] || PiggyBank;
               const p = g.target > 0 ? (g.current / g.target) * 100 : 0;
               const remaining = Math.max(0, g.target - g.current);
-              
-              // Calculate monthly savings rate to hit deadline
-              // Estimate 6 months default if parse fails
-              const monthsLeft = 6; 
-              const monthlyRate = Math.round(remaining / monthsLeft);
+              const metrics = getGoalDeadlineMetrics(g.deadline, g.target, g.current);
 
               return (
                 <div key={g.id} className="bg-card rounded-2xl p-4 border border-border/60 shadow-sm relative group">
@@ -107,7 +119,15 @@ export function Goals({ onBack }: { onBack?: () => void }) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-bold text-slate-800 truncate">{g.name}</div>
-                      <div className="text-xs text-muted-foreground">Target deadline: {g.deadline}</div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                        {metrics.isInvalid ? (
+                          <span className="text-rose-600 font-semibold">⚠️ Fix date ({g.deadline})</span>
+                        ) : metrics.hasDeadline ? (
+                          <span>Target: {metrics.formattedDate} ({metrics.timeText})</span>
+                        ) : (
+                          <span>Target: {g.deadline || "No deadline"}</span>
+                        )}
+                      </div>
                     </div>
                     <div className="text-right flex items-center gap-2">
                       <div className="text-sm font-extrabold text-slate-800">{p.toFixed(0)}%</div>
@@ -137,12 +157,10 @@ export function Goals({ onBack }: { onBack?: () => void }) {
                     <span>{inr(remaining)} to go</span>
                   </div>
 
-                  {remaining > 0 && (
-                    <div className="mt-3 pt-3 border-t border-border/60 flex items-start gap-2">
-                      <Sparkles className="size-3.5 text-primary mt-0.5" />
-                      <div className="text-xs text-muted-foreground flex-1">
-                        Allocate <span className="text-foreground font-bold">{inr(monthlyRate)}/mo</span> to reach this goal on target.
-                      </div>
+                  {remaining > 0 && metrics.hasDeadline && !metrics.isOverdue && (
+                    <div className="mt-2 pt-2 border-t border-border/40 flex justify-between text-[11px] text-muted-foreground">
+                      <span>Timeline: {metrics.timeText}</span>
+                      <span className="font-semibold text-foreground">Save {inr(metrics.suggestedMonthly)}/mo</span>
                     </div>
                   )}
                 </div>
@@ -161,10 +179,10 @@ export function Goals({ onBack }: { onBack?: () => void }) {
 
       {/* Create Goal Modal */}
       {addOpen && (
-        <div className="absolute inset-0 z-50 flex items-end" onClick={() => setAddOpen(false)}>
-          <div className="absolute inset-0 bg-black/40 animate-in fade-in" />
-          <div onClick={(e) => e.stopPropagation()} className="relative w-full bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200">
-            <div className="flex justify-between items-center mb-4">
+        <div className="fixed inset-0 z-50 flex items-end" onClick={() => setAddOpen(false)}>
+          <div className="fixed inset-0 bg-black/40 animate-in fade-in" />
+          <div onClick={(e) => e.stopPropagation()} className="relative w-full bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200 max-h-[90vh] overflow-y-auto z-10 shadow-2xl">
+            <div className="flex justify-between items-center mb-4 sticky top-0 bg-card py-2 z-10 border-b border-border/40">
               <div className="font-display font-bold text-lg text-slate-800">Create New Goal</div>
               <button onClick={() => setAddOpen(false)} className="size-8 rounded-full bg-muted flex items-center justify-center">
                 <X className="size-4" />
@@ -208,13 +226,66 @@ export function Goals({ onBack }: { onBack?: () => void }) {
               </div>
 
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1">Target Deadline</label>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-xs text-muted-foreground font-bold">Target Deadline</label>
+                  {formDeadline && (
+                    <button
+                      type="button"
+                      onClick={() => setFormDeadline("")}
+                      className="text-[11px] text-rose-600 hover:underline font-semibold"
+                    >
+                      Clear Date
+                    </button>
+                  )}
+                </div>
                 <input 
+                  type="date"
+                  min={todayStr}
+                  max="2099-12-31"
                   value={formDeadline}
                   onChange={(e) => setFormDeadline(e.target.value)}
-                  placeholder="e.g. Dec 2026, Oct 2027"
                   className="w-full rounded-xl border border-border px-3.5 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
                 />
+
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  <span className="text-[11px] text-muted-foreground mr-0.5">Quick set:</span>
+                  {[
+                    { label: "+3M", months: 3 },
+                    { label: "+6M", months: 6 },
+                    { label: "+1 Yr", months: 12 },
+                    { label: "+2 Yrs", months: 24 },
+                    { label: "+5 Yrs", months: 60 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setFormDeadline(getQuickDatePreset(preset.months))}
+                      className="text-[11px] font-semibold px-2 py-1 bg-slate-100 hover:bg-primary/10 hover:text-primary rounded-lg transition"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                {formDeadline && (
+                  <div className={`mt-2 p-2.5 rounded-xl text-xs border ${
+                    formDeadlineMetrics.isInvalid 
+                      ? "bg-rose-50 border-rose-200 text-rose-800" 
+                      : "bg-blue-50/80 border-blue-200 text-blue-900"
+                  }`}>
+                    {formDeadlineMetrics.isInvalid ? (
+                      <div className="flex items-center gap-1.5 font-bold">
+                        <AlertTriangle className="size-3.5 text-rose-600 shrink-0" />
+                        <span>Please enter a realistic year between 2000 and 2099.</span>
+                      </div>
+                    ) : (
+                      <div className="font-bold flex items-center gap-1.5">
+                        <Calendar className="size-3.5 text-blue-600" />
+                        <span>Target: {formDeadlineMetrics.formattedDate} ({formDeadlineMetrics.timeText})</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -225,6 +296,7 @@ export function Goals({ onBack }: { onBack?: () => void }) {
                     return (
                       <button 
                         key={k}
+                        type="button"
                         onClick={() => setFormIcon(k)}
                         className={`size-10 rounded-xl flex items-center justify-center border transition ${formIcon === k ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"}`}
                       >
@@ -241,6 +313,7 @@ export function Goals({ onBack }: { onBack?: () => void }) {
                   {["#1E40AF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899"].map((color) => (
                     <button 
                       key={color}
+                      type="button"
                       onClick={() => setFormColor(color)}
                       className={`size-8 rounded-full border-2 transition ${formColor === color ? "border-slate-800 scale-110" : "border-transparent"}`}
                       style={{ backgroundColor: color }}
@@ -250,10 +323,12 @@ export function Goals({ onBack }: { onBack?: () => void }) {
               </div>
 
               <button 
+                type="button"
                 onClick={handleSaveGoal}
-                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20"
+                disabled={!formName.trim() || !formTarget || formDeadlineMetrics.isInvalid || submitting}
+                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-50"
               >
-                Create Financial Goal
+                {submitting ? "Creating Goal..." : "Create Financial Goal"}
               </button>
             </div>
           </div>
@@ -294,9 +369,10 @@ export function Goals({ onBack }: { onBack?: () => void }) {
 
               <button 
                 onClick={handleContribute}
-                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20"
+                disabled={submitting}
+                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-50"
               >
-                Confirm Allocation
+                {submitting ? "Allocating..." : "Confirm Allocation"}
               </button>
             </div>
           </div>

@@ -1,13 +1,14 @@
 import { useMemo } from "react";
-import { TrendingUp, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, Minus, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
-import { lifestyleInflation } from "../../lib/intelligence";
+import { lifestyleInflation, categoryInflation } from "../../lib/intelligence";
 
 export function LifestyleInflation({ onBack }: { onBack: () => void }) {
   const { transactions } = useStore();
   const r = useMemo(() => lifestyleInflation(transactions), [transactions]);
+  const catInflation = useMemo(() => categoryInflation(transactions), [transactions]);
   const warning = r.verdict === "outpacing";
 
   return (
@@ -39,6 +40,43 @@ export function LifestyleInflation({ onBack }: { onBack: () => void }) {
             <Bar incomeGrowth={r.incomeGrowth} expenseGrowth={r.expenseGrowth} />
           </div>
 
+          {/* Per-category Inflation Breakdown */}
+          {catInflation.length > 0 && (
+            <div className="bg-card rounded-2xl p-4 border border-border/60 space-y-3">
+              <div className="flex items-center gap-2 mb-1">
+                <TrendingUp className="size-4 text-primary" />
+                <div className="text-sm" style={{ fontWeight: 700 }}>Which categories are inflating?</div>
+              </div>
+              <div className="text-[11px] text-muted-foreground mb-2">
+                Comparing avg monthly spend: last 3 months vs prior 3 months
+              </div>
+              <div className="divide-y divide-border/40">
+                {catInflation.slice(0, 8).map((c) => {
+                  const isUp = c.growthPct > 5;
+                  const isDown = c.growthPct < -5;
+                  return (
+                    <div key={c.category} className="py-2.5 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                        <div className={`size-7 rounded-lg flex items-center justify-center ${isUp ? "bg-rose-50 text-rose-600" : isDown ? "bg-emerald-50 text-emerald-600" : "bg-slate-50 text-slate-500"}`}>
+                          {isUp ? <ArrowUpRight className="size-3.5" /> : isDown ? <ArrowDownRight className="size-3.5" /> : <Minus className="size-3.5" />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-800 truncate">{c.category}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {inr(Math.round(c.olderAvg))}/mo → {inr(Math.round(c.recentAvg))}/mo
+                          </div>
+                        </div>
+                      </div>
+                      <div className={`text-xs font-extrabold ${isUp ? "text-rose-600" : isDown ? "text-emerald-600" : "text-slate-500"}`}>
+                        {c.growthPct > 0 ? "+" : ""}{c.growthPct.toFixed(0)}%
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="bg-card rounded-2xl p-4 border border-border/60">
             <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="size-4 text-primary" />
@@ -48,6 +86,7 @@ export function LifestyleInflation({ onBack }: { onBack: () => void }) {
               <li>• Hold expense growth ≤ income growth — channel raises into investments, not lifestyle.</li>
               <li>• Run Wealth Leakage to find silent monthly drags.</li>
               <li>• Set a savings-rate floor (e.g. 30%) and check it each month.</li>
+              <li>• Check Spending Patterns to see which merchants are creeping up.</li>
             </ul>
           </div>
         </div>
@@ -85,3 +124,4 @@ function Bar({ incomeGrowth, expenseGrowth }: { incomeGrowth: number; expenseGro
     </div>
   );
 }
+

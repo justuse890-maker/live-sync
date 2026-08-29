@@ -30,7 +30,7 @@ export function Header({ title, subtitle, showBack, onBack, right }: Omit<Props,
 
   return (
     <div className="sticky top-0 z-20 bg-background/90 backdrop-blur-lg border-b border-border">
-      <div className="px-5 pt-5 pb-4 flex items-center gap-3">
+      <div className="px-5 pt-4 pb-4 flex items-center gap-3">
         {showBack ? (
           <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-muted">
             <ChevronLeft className="size-5" />
@@ -51,5 +51,5 @@ export function Header({ title, subtitle, showBack, onBack, right }: Omit<Props,
 }
 
 export function Screen({ children }: { children: ReactNode }) {
-  return <div className="flex-1 overflow-y-auto pb-28">{children}</div>;
+  return <div className="flex-1 overflow-y-auto page-content">{children}</div>;
 }

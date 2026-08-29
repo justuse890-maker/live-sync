@@ -241,6 +241,34 @@ src/
 
 ## 🤖 Compiling as Android APK (Web-to-APK)
 
+### Shareable investor-demo APK
+
+Use the investor-demo build for presentations. It is separately installable as
+`com.livesync.ai.demo`, signs into a deliberately public sample account, and
+must never be connected to personal or customer data.
+
+```bash
+npm run seed:investor-demo   # one time: creates sample records
+npm run apk:investor-demo
+```
+
+The APK is at `android/app/build/outputs/apk/investorDemo/app-investorDemo.apk`.
+Its public credentials are `investor.demo@livesync.example` and
+`LiveSyncDemo2026!`. Reset this demo account after an event if recipients were
+allowed to change data.
+
+### Google sign-in setup
+
+Before building Android, copy `.env.example` to `.env` and set
+`VITE_GOOGLE_WEB_CLIENT_ID` to the **Web application** OAuth client ID from
+Google Cloud. In that Google Cloud OAuth client, register Android package
+`com.livesync.ai` with the SHA-1 certificate used to sign the APK. Enable the
+Google provider in Supabase Auth and configure it with the same Web client ID.
+
+The application validates this setting before opening the Google account picker
+and explains common configuration errors (missing client ID, SHA/package
+mismatch, Supabase audience mismatch, and redirect mismatch).
+
 You can wrap LiveSync AI as a native Android App using the included Capacitor setup:
 
 1. **Initialize Android Platform**:

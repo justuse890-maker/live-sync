@@ -3,21 +3,25 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Client-side financial news aggregator.
  *
- * Legal basis:
+ * Legal basis — PUBLIC DOMAIN SOURCES ONLY:
  *   • PIB India  – official Govt. of India RSS (public domain)
+ *   • RBI        – Reserve Bank of India RSS (public domain)
+ *   • SEBI       – Securities and Exchange Board of India RSS (public domain)
+ *   • Ministry of Finance India – official Govt. RSS (public domain)
  *   • UN News    – official intergovernmental RSS (public domain)
- *   • The Guardian – Open Platform free tier (attribution required; non-commercial
- *                    free tier — verify current terms at open-platform.theguardian.com
- *                    before production use)
  *
- * Only headlines + ≤200-char snippets are shown; full article text is NEVER
+ * Only headlines + ≤160-char snippets are shown; full article text is NEVER
  * stored or displayed. Each card links to the canonical publisher URL.
+ *
+ * ⚠️ IMPORTANT: We do NOT copy, reproduce, or republish any copyrighted content.
+ *    All news displayed is from government/public-domain RSS feeds only.
+ *    If any content owner has concerns, they can contact us at:
+ *    niteshjha.uiux@yahoo.com
  *
  * Architecture:
  *   App  →  fetchNewsFeed()
  *              ├─ @capacitor/network check (online/offline)
  *              ├─ rss2json.com public bridge (CORS-safe, no key for RSS)
- *              ├─ Guardian content API (free key: open-platform.theguardian.com)
  *              ├─ Normalise → Article[]
  *              └─ 10-min localStorage cache
  */
@@ -40,7 +44,7 @@ export type NewsCategory =
 export interface Article {
   id: string;
   title: string;
-  /** Max 200 chars; never the full body */
+  /** Max 160 chars; never the full body */
   snippet: string;
   link: string;
   publishedAt: string;
@@ -59,7 +63,7 @@ interface SourceDef {
   name: string;
   tier: NewsTier;
   tierLabel: string;
-  type: 'rss' | 'guardian';
+  type: 'rss';
   url: string;
   categories: NewsCategory[];
   region: 'india' | 'global';
@@ -97,6 +101,16 @@ const SOURCE_REGISTRY: SourceDef[] = [
     region: 'india',
   },
   {
+    id: 'mof-india',
+    name: 'Ministry of Finance, India',
+    tier: 'government',
+    tierLabel: 'Official government source',
+    type: 'rss',
+    url: 'https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3',
+    categories: ['economy', 'tax', 'schemes'],
+    region: 'india',
+  },
+  {
     id: 'un-news',
     name: 'UN News',
     tier: 'government',
@@ -104,17 +118,6 @@ const SOURCE_REGISTRY: SourceDef[] = [
     type: 'rss',
     url: 'https://news.un.org/feed/subscribe/en/news/all/rss.xml',
     categories: ['global', 'economy'],
-    region: 'global',
-  },
-  {
-    id: 'guardian-economy',
-    name: 'The Guardian',
-    tier: 'licensed',
-    tierLabel: 'Licensed news partner',
-    type: 'guardian',
-    // Replace TEST_KEY with a free key from open-platform.theguardian.com
-    url: 'https://content.guardianapis.com/search?section=business|money|economics&order-by=newest&show-fields=trailText,thumbnail&api-key=test',
-    categories: ['economy', 'markets', 'global'],
     region: 'global',
   },
 ];
@@ -166,7 +169,7 @@ async function fetchRss(source: SourceDef): Promise<Article[]> {
     snippet: ((item.description ?? item.content ?? '') as string)
       .replace(/<[^>]+>/g, '')  // strip HTML tags
       .trim()
-      .slice(0, 200),
+      .slice(0, 160),
     link: item.link ?? '',
     publishedAt: item.pubDate ?? new Date().toISOString(),
     sourceName: source.name,
@@ -175,33 +178,6 @@ async function fetchRss(source: SourceDef): Promise<Article[]> {
     tierLabel: source.tierLabel,
     category: source.categories[0],
     thumbnail: item.thumbnail || item.enclosure?.link || undefined,
-  }));
-}
-
-// ─── Guardian fetch ───────────────────────────────────────────────────────────
-
-async function fetchGuardian(source: SourceDef): Promise<Article[]> {
-  const res = await fetch(source.url, { signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`Guardian fetch failed: ${res.status}`);
-  const json = await res.json();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const results: any[] = json?.response?.results ?? [];
-
-  return results.map((item) => ({
-    id: `guardian::${item.id}`,
-    title: item.webTitle?.trim() ?? 'Untitled',
-    snippet: (item.fields?.trailText ?? '')
-      .replace(/<[^>]+>/g, '')
-      .trim()
-      .slice(0, 200),
-    link: item.webUrl ?? '',
-    publishedAt: item.webPublicationDate ?? new Date().toISOString(),
-    sourceName: source.name,
-    sourceId: source.id,
-    tier: source.tier,
-    tierLabel: source.tierLabel,
-    category: 'economy' as NewsCategory,
-    thumbnail: item.fields?.thumbnail ?? undefined,
   }));
 }
 
@@ -262,7 +238,7 @@ export async function fetchNewsFeed(): Promise<NewsFeedResult> {
 
   // Fetch all sources concurrently; failures don't block others
   const results = await Promise.allSettled(
-    SOURCE_REGISTRY.map((s) => (s.type === 'guardian' ? fetchGuardian(s) : fetchRss(s)))
+    SOURCE_REGISTRY.map((s) => fetchRss(s))
   );
 
   const articles: Article[] = [];

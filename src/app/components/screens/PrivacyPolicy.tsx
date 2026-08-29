@@ -1,10 +1,10 @@
-import { ChevronLeft, Shield, Mail, ExternalLink } from "lucide-react";
+import { ChevronLeft, Shield, Mail, ExternalLink, Lock, Smartphone } from "lucide-react";
 import { Header, Screen } from "../Shell";
 
-const LAST_UPDATED = "July 17, 2026";
+const LAST_UPDATED = "August 11, 2026";
 const APP_NAME = "LiveSync AI";
 const COMPANY = "LiveSync Technologies";
-const CONTACT_EMAIL = "mail.com"; // TODO: replace with actual email
+const CONTACT_EMAIL = "niteshjha.uiux@yahoo.com";
 
 export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
   return (
@@ -28,7 +28,7 @@ export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
               <B>Account Data:</B> Name, email address, and hashed password when you create an account.
             </P>
             <P>
-              <B>Financial Data:</B> Transactions, income, expenses, budgets, goals, investments, insurance policies, loans, and other financial records you manually enter or import. This data is stored securely in your account and is only accessible by you.
+              <B>Financial Data:</B> Transactions, income, expenses, budgets, goals, investments, insurance policies, loans, and other financial records you manually enter or import. The app encrypts supported sensitive fields on your device before upload; structural data needed to operate the service may remain unencrypted.
             </P>
             <P>
               <B>Onboarding Data:</B> Age band, occupation, income band, and primary financial goal — used solely to personalise the app experience.
@@ -57,16 +57,16 @@ export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
               </p>
             </div>
             <P>
-              When you opt into AI features (Coach, Insights, Fraud Alerts, Category Suggestions), {APP_NAME} sends <B>aggregated, anonymised summaries</B> of your financial data (category totals, budget progress, goal metrics) to third-party AI providers for processing. We <B>never</B> send:
+              When you opt into an AI feature, {APP_NAME} sends the information needed for that feature to its AI provider. This can include category totals, budget progress, goal metrics and, when you choose to share them, merchant names or your message. We do not request bank passwords or OTPs.
             </P>
-            <P>• Your full name, email, or account credentials to AI providers</P>
-            <P>• Individual transaction descriptions or merchant names (unless you explicitly share them in a coaching prompt)</P>
-            <P>• Bank account numbers, UPI IDs, or payment instrument details</P>
+            <P>• The app does not intentionally include your account password, bank password, or OTP in AI requests.</P>
+            <P>• AI Coach hides merchant names by default; you can change that setting before using it.</P>
+            <P>• Do not include account numbers, UPI IDs, card data, or other sensitive identifiers in an AI prompt.</P>
             <P className="mt-3">
               <B>Third-party AI providers currently used:</B>
             </P>
-            <P>• Anthropic (Claude) — for financial coaching and insights</P>
-            <P>• Google (Gemini) — for document analysis in the Document Vault</P>
+            <P>• Groq (Llama) — when you configure and use the bring-your-own-key AI Coach; requests go directly from the app to Groq.</P>
+            <P>• Google (Gemini) — merchant normalisation, when that feature is enabled and available.</P>
             <P className="mt-3">
               We implement reasonable administrative, technical, and organizational safeguards to protect user information. However, <B>no digital platform or AI service can guarantee absolute security or error-free operation</B>. By choosing to use AI-powered features, you acknowledge these inherent limitations and consent to the processing of your information as described herein.
             </P>
@@ -76,62 +76,84 @@ export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
           </Section>
 
           <Section title="4. Data Storage & Security">
-            <P>Your data is stored on <B>Supabase</B> infrastructure (Mumbai, India region) with:</P>
-            <P>• AES-256 encryption at rest</P>
-            <P>• TLS 1.3 encryption in transit</P>
-            <P>• Row-level security (RLS) — your data is cryptographically isolated from other users</P>
-            <P>• Automated encrypted backups rotated every 30 days</P>
-            <P className="mt-2">Authentication is handled via Supabase Auth (GoTrue) with bcrypt-hashed passwords. We never store your password in plaintext.</P>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 mb-3">
+              <div className="flex items-start gap-2">
+                <Lock className="size-4 text-emerald-700 mt-0.5 shrink-0" />
+                <p className="text-xs text-emerald-800 leading-relaxed" style={{ fontWeight: 600 }}>
+                  The app encrypts supported sensitive fields using AES-256-GCM before upload. This is not a guarantee of absolute security.
+                </p>
+              </div>
+            </div>
+            <P><B>Client-side encryption:</B> The app encrypts selected sensitive fields such as transaction amounts, names and notes on the device before upload. It derives the key from a device-local secret; some structural fields needed to operate the service are not encrypted by this app.</P>
+            <P><B>What this means:</B> Application-level encryption reduces exposure of those selected fields in our data store. It does not make the service risk-free, and users should not rely on it as the sole protection for sensitive documents or credentials.</P>
+            <P className="mt-2"><B>Additional layers of protection:</B></P>
+            <P>• Authenticated application endpoints limit access to signed-in users.</P>
+            <P>• Key derivation uses PBKDF2 with 300,000 iterations for the app-level encrypted fields.</P>
+            <P>• Supabase provides the cloud database, authentication and object storage used by the app.</P>
+            <P className="mt-2">Authentication is handled by Supabase Auth. Never share passwords, OTPs, full card numbers, or recovery codes with any person or AI feature.</P>
           </Section>
 
-          <Section title="5. Data Retention">
-            <P>• <B>Financial data:</B> Retained until you delete it or close your account.</P>
-            <P>• <B>AI prompts/responses:</B> Retained for 90 days for safety review, then permanently purged.</P>
-            <P>• <B>Auth logs:</B> 12 months for fraud investigation.</P>
-            <P>• <B>Account deletion:</B> All personal data is permanently deleted within 30 days of account closure per DPDP Act §12.</P>
+          <Section title="5. Local Cache & Offline Access">
+            <div className="flex items-start gap-2 mb-2">
+              <Smartphone className="size-4 text-indigo-600 mt-0.5 shrink-0" />
+              <p className="text-xs text-muted-foreground leading-relaxed" style={{ fontWeight: 600 }}>
+                <span className="text-foreground">Cloud + Local Cache architecture</span> — your data lives in the cloud, with a fast local copy on your device.
+              </p>
+            </div>
+            <P>{APP_NAME} uses a <B>cloud + local cache</B> architecture:</P>
+            <P>• Your primary data is stored in a secure cloud database (Supabase), encrypted with your device key.</P>
+            <P>• A local copy is cached on your device (IndexedDB) for instant loading and offline browsing of previously loaded data.</P>
+            <P>• Every write is saved to the cloud immediately. The local cache is updated in sync.</P>
+            <P>• The local cache is cleared when you sign out to prevent data leakage between accounts on shared devices.</P>
+            <P>• The local cache survives app restarts and APK updates, but not app uninstall. For uninstall-proof protection, use Cloud Backup or Google Drive backup.</P>
           </Section>
 
-          <Section title="6. Third-Party Services">
+          <Section title="6. Data Retention">
+            <P>• <B>Financial data:</B> Retained (in encrypted form) until you delete it or close your account.</P>
+            <P>• <B>AI requests:</B> are handled by the relevant AI provider under its own retention policy; read that provider's policy before use.</P>
+            <P>• <B>Account deletion:</B> the app requests deletion of its user records and vault files when you delete your account. Some provider backups or legally required records may persist for a limited period.</P>
+          </Section>
+
+          <Section title="7. Third-Party Services">
             <P>{APP_NAME} integrates with the following third-party services:</P>
             <P>• <B>Supabase:</B> Database, authentication, and file storage</P>
-            <P>• <B>Vercel:</B> Web application hosting</P>
-            <P>• <B>Anthropic / Google:</B> AI model providers (only when you opt in)</P>
+            <P>• <B>Groq / Google:</B> AI providers when you choose to use the relevant AI feature</P>
             <P>• <B>RSS2JSON:</B> News feed aggregation (no personal data transmitted)</P>
             <P>• <B>The Guardian Open Platform:</B> News content (no personal data transmitted)</P>
-            <P className="mt-2">We do <B>not</B> sell, rent, or share your personal data with third parties for advertising purposes.</P>
+            <P className="mt-2">We do not use financial records for advertising. Service providers process data as necessary to provide their services, and AI providers process the content sent to their features.</P>
           </Section>
 
-          <Section title="7. Your Rights (DPDP Act, 2023)">
+          <Section title="8. Your Rights (DPDP Act, 2023)">
             <P>Under the Digital Personal Data Protection Act, 2023, you have the right to:</P>
             <P>• <B>Access:</B> Request a copy of all personal data we hold about you.</P>
             <P>• <B>Correction:</B> Request correction of inaccurate or incomplete data.</P>
             <P>• <B>Erasure:</B> Request deletion of your personal data (via Security → Delete my account).</P>
             <P>• <B>Withdraw consent:</B> Withdraw consent for AI processing at any time (via Security → AI settings).</P>
-            <P>• <B>Grievance redressal:</B> Contact our Data Protection Officer at <B>{CONTACT_EMAIL}</B>. We respond within 7 business days.</P>
+            <P>• <B>Grievance redressal:</B> Contact us at <B>{CONTACT_EMAIL}</B>. We aim to respond within 7 business days.</P>
             <P>• <B>Nominate:</B> Nominate another person to exercise your rights in case of death or incapacity.</P>
           </Section>
 
-          <Section title="8. Children's Privacy">
+          <Section title="9. Children's Privacy">
             <P>
               {APP_NAME} is not intended for users under the age of 18. We do not knowingly collect personal data from minors. If you believe a child has provided us data, please contact us immediately.
             </P>
           </Section>
 
-          <Section title="9. Changes to This Policy">
+          <Section title="10. Changes to This Policy">
             <P>
               We may update this Privacy Policy from time to time. Material changes will be communicated via in-app notification and/or email. Your continued use of {APP_NAME} after changes constitutes acceptance of the updated policy.
             </P>
           </Section>
 
-          <Section title="10. Contact Us">
+          <Section title="11. Contact Us">
             <P>For privacy-related questions, data access requests, or complaints:</P>
             <div className="flex items-center gap-2 mt-2 bg-muted/60 rounded-xl px-3.5 py-2.5">
               <Mail className="size-4 text-primary" />
               <span className="text-sm" style={{ fontWeight: 600 }}>{CONTACT_EMAIL}</span>
             </div>
             <P className="mt-2">
-              Data Protection Officer: {COMPANY}<br />
-              Response time: Within 7 business days.
+              Contact: {CONTACT_EMAIL}<br />
+              Response target: Within 7 business days.
             </P>
           </Section>
 

@@ -1,11 +1,14 @@
 import { useMemo, useEffect, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, Sparkles, Shield, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Wallet, Calendar, ChevronLeft, Droplets, Flame, TrendingUp, PlusCircle } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Sparkles, Shield, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Wallet, Calendar, ChevronLeft, Droplets, Flame, TrendingUp, PlusCircle, ArrowRightLeft } from "lucide-react";
 import { useStore } from "../../store";
 import { inr, ScreenId } from "../types";
 import { Header, Screen } from "../Shell";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
-import { netWorth, detectLeaks, lifestyleInflation, fire, monthlyFlow } from "../../lib/intelligence";
+import { netWorth, detectLeaks, lifestyleInflation, fire, monthlyFlow, spendingAnomalies, upcomingBigBills } from "../../lib/intelligence";
 import { api } from "../../lib/api";
+import { getMonthKey, formatMonthName, shiftMonth, getMonthString } from "../../lib/dateUtils";
+import { ForecastCard } from "../ForecastCard";
+import { ActionCard } from "../ActionCard";
 
 const severityStyle = {
   success: { bg: "bg-emerald-50", text: "text-emerald-700", Icon: CheckCircle2 },
@@ -13,37 +16,25 @@ const severityStyle = {
   danger: { bg: "bg-rose-50", text: "text-rose-700", Icon: XCircle },
 };
 
-// Helper to match months
-function getMonthKey(dateStr: string): string {
-  if (/^\d{4}-\d{2}$/.test(dateStr)) return dateStr;
-  if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 7);
-  const parts = dateStr.split(" ");
-  if (parts.length >= 2) {
-    const monthName = parts[0].toLowerCase();
-    const year = parts[2] || "2026";
-    const monthMap: Record<string, string> = {
-      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
-      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
-    };
-    const mm = monthMap[monthName.slice(0, 3)];
-    if (mm) return `${year}-${mm}`;
-  }
-  return new Date().toISOString().slice(0, 7);
+function sanitizeDisplayString(val?: any, fallback = "Goal"): string {
+  if (!val || typeof val !== "string") return fallback;
+  if (val.startsWith("enc:")) return fallback;
+  return val;
 }
 
-function formatMonthName(monthStr: string): string {
-  const [year, month] = monthStr.split("-");
-  const monthNames = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
-  const idx = parseInt(month, 10) - 1;
-  return `${monthNames[idx] || month} ${year}`;
+function sanitizeDisplayNumber(val?: any): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  if (typeof val === "string" && !val.startsWith("enc:")) {
+    const parsed = parseFloat(val);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return 0;
 }
 
 export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
-  const { transactions, subscriptions, assets, liabilities, buckets, selectedMonth, setSelectedMonth } = useStore();
+  const { ready, transactions, subscriptions, assets, liabilities, buckets, creditCards, selectedMonth, setSelectedMonth, addBucketContribution } = useStore();
   const [userName, setUserName] = useState("there");
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
   // Fetch real user name from Supabase auth
   useEffect(() => {
@@ -56,17 +47,18 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
     })();
   }, []);
 
+  // Track when data was last synced from the server
+  useEffect(() => {
+    if (ready) setLastSynced(new Date());
+  }, [ready]);
+
   // Cycle Months
   const handlePrevMonth = () => {
-    const [y, m] = selectedMonth.split("-").map(Number);
-    const prevDate = new Date(y, m - 2, 1);
-    setSelectedMonth(prevDate.toISOString().slice(0, 7));
+    setSelectedMonth(shiftMonth(selectedMonth, -1));
   };
 
   const handleNextMonth = () => {
-    const [y, m] = selectedMonth.split("-").map(Number);
-    const nextDate = new Date(y, m, 1);
-    setSelectedMonth(nextDate.toISOString().slice(0, 7));
+    setSelectedMonth(shiftMonth(selectedMonth, 1));
   };
 
   // Filter transactions for selected month
@@ -76,75 +68,139 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
 
   // Dynamic calculations from real data
   const monthlyIncome = useMemo(() => {
-    return monthlyTx.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+    return monthlyTx.filter(t => t.type === "income").reduce((s, t) => s + sanitizeDisplayNumber(t.amount), 0);
   }, [monthlyTx]);
 
   const monthlyExpenses = useMemo(() => {
-    return monthlyTx.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
+    return monthlyTx.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(sanitizeDisplayNumber(t.amount)), 0);
   }, [monthlyTx]);
 
-  const monthlySavings = Math.max(0, monthlyIncome - monthlyExpenses);
-  const pct = monthlyIncome > 0 ? (monthlySavings / monthlyIncome) * 100 : 0;
+  const netSavings = monthlyIncome - monthlyExpenses;
+  const pct = monthlyIncome > 0 ? (netSavings / monthlyIncome) * 100 : 0;
 
+  // Intelligence calculations
+  const leaks = useMemo(() => detectLeaks(transactions, subscriptions), [transactions, subscriptions]);
   const nw = useMemo(() => netWorth(assets, liabilities), [assets, liabilities]);
   const livenw = nw.netWorth;
-  const leaks = useMemo(() => detectLeaks(transactions, subscriptions), [transactions, subscriptions]);
   const inflation = useMemo(() => lifestyleInflation(transactions), [transactions]);
+  const monthlyBurn = useMemo(() => Math.max(monthlyExpenses, 1), [monthlyExpenses]);
+  const liquidAssets = useMemo(() => {
+    return assets.filter(a => a.category === "cash" || a.category === "savings" || a.category === "investment").reduce((s, a) => s + sanitizeDisplayNumber(a.value), 0);
+  }, [assets]);
+  const emergencyMonths = Math.round((liquidAssets / monthlyBurn) * 10) / 10;
   const fireR = useMemo(() => fire(monthlyExpenses || 1, Math.max(0, livenw), 28), [monthlyExpenses, livenw]);
 
-  // Compute health score from real data
+  // Compute health score from real data — 0-based, every point earned from actual data
   const healthScore = useMemo(() => {
-    let score = 50; // base score
-    if (monthlySavings > 0 && monthlyIncome > 0) score += Math.min(20, (pct / 30) * 20);
+    let score = 0;
+    // +5 for being engaged (has any transactions at all)
+    if (transactions.length > 0) score += 5;
+    // +20 for having income tracked
+    if (monthlyIncome > 0) score += 20;
+    // +20 savings rate bonus (scaled: 30%+ savings = full 20pts)
+    if (netSavings > 0 && monthlyIncome > 0) score += Math.min(20, (pct / 30) * 20);
+    // +10 for positive net worth
     if (livenw > 0) score += 10;
+    // +15 expenses < income (spending responsibly)
+    if (monthlyExpenses > 0 && monthlyIncome > monthlyExpenses) score += 15;
+    // +10 low leakage (annual leaks < 10% of monthly income)
+    if (monthlyIncome > 0 && leaks.totalAnnual < monthlyIncome * 0.1) score += 10;
+    // +5 has savings goals
     if (buckets.length > 0) score += 5;
-    if (leaks.totalAnnual < monthlyIncome * 0.1) score += 10;
-    if (monthlyExpenses > 0 && monthlyIncome > monthlyExpenses) score += 5;
+    // +15 no leakage at all
+    if (leaks.totalAnnual === 0 && transactions.length > 0) score += 15;
     return Math.min(100, Math.round(score));
-  }, [monthlySavings, monthlyIncome, pct, livenw, buckets, leaks, monthlyExpenses]);
+  }, [transactions, netSavings, monthlyIncome, pct, livenw, buckets, leaks, monthlyExpenses]);
 
-  const emergencyMonths = useMemo(() => {
-    if (monthlyExpenses <= 0) return 0;
-    const liquidAssets = assets.reduce((sum, a) => {
-      if (a.category === "savings" || a.category === "cash" || a.category === "investment") return sum + a.value;
-      return sum;
-    }, 0);
-    return Math.round((liquidAssets / monthlyExpenses) * 10) / 10;
-  }, [assets, monthlyExpenses]);
-
-  // Build cash flow data from last 6 months of real transactions
+  // 6-Month Cash Flow Trend Data
   const cashFlowData = useMemo(() => {
-    const months: string[] = [];
-    const now = new Date();
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push(d.toISOString().slice(0, 7));
-    }
-    return months.map(m => {
-      const mTx = transactions.filter(t => getMonthKey(t.date) === m);
-      const income = mTx.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
-      const expenses = mTx.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
-      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      return { month: monthNames[parseInt(m.slice(5, 7), 10) - 1], income, expenses };
+    return [5, 4, 3, 2, 1, 0].map(offset => {
+      const monthKey = shiftMonth(selectedMonth, -offset);
+      const txs = transactions.filter(t => getMonthKey(t.date) === monthKey);
+      const inc = txs.filter(t => t.type === "income").reduce((s, t) => s + sanitizeDisplayNumber(t.amount), 0);
+      const exp = txs.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(sanitizeDisplayNumber(t.amount)), 0);
+      return {
+        month: formatMonthName(monthKey, "short"),
+        fullMonth: formatMonthName(monthKey, "full"),
+        monthKey,
+        isCurrent: offset === 0,
+        income: inc,
+        expenses: exp,
+        savings: Math.max(0, inc - exp)
+      };
     });
-  }, [transactions]);
+  }, [transactions, selectedMonth]);
 
-  // Generate dynamic AI insights from real data
+  const sixMonthExpenses = useMemo(() => cashFlowData.reduce((s, d) => s + d.expenses, 0), [cashFlowData]);
+
+  // Financial Focus is a small, explainable feed based only on recorded data.
   const dynamicInsights = useMemo(() => {
-    const insights: { id: string; title: string; body: string; action: string; severity: "success" | "warning" | "danger" }[] = [];
-    if (pct > 30) insights.push({ id: "save", title: "Great savings rate!", body: `You're saving ${pct.toFixed(0)}% of your income this month.`, action: "View goals", severity: "success" });
-    if (pct < 10 && monthlyIncome > 0) insights.push({ id: "low-save", title: "Low savings this month", body: `Only ${pct.toFixed(0)}% savings rate. Consider cutting discretionary spending.`, action: "View budgets", severity: "warning" });
-    if (leaks.totalAnnual > 5000) insights.push({ id: "leak", title: `₹${Math.round(leaks.totalAnnual).toLocaleString("en-IN")} annual leakage`, body: "Detected potential money leaks in subscriptions and recurring charges.", action: "View leaks", severity: "danger" });
+    const insights: { id: string; title: string; body: string; action: string; target: ScreenId; severity: "success" | "warning" | "danger" }[] = [];
+    const cardAlerts = creditCards.map((card) => {
+      const trackedSpend = monthlyTx.filter((tx) => tx.type === "expense" && tx.creditCardId === card.id).reduce((sum, tx) => sum + Math.abs(sanitizeDisplayNumber(tx.amount)), 0);
+      const cardLimit = sanitizeDisplayNumber(card.creditLimit);
+      return { card, trackedSpend, usage: cardLimit > 0 ? (trackedSpend / cardLimit) * 100 : 0 };
+    }).filter(({ usage }) => usage >= 30).sort((a, b) => b.usage - a.usage);
+    if (cardAlerts[0]) {
+      const { card, usage } = cardAlerts[0];
+      const cardName = sanitizeDisplayString(card.cardName, "Card");
+      insights.push({ id: `card-${card.id}`, title: `${cardName} usage is ${usage.toFixed(0)}%`, body: "This is based on expenses linked to this card during the selected month, not an issuer balance.", action: "Open Card Desk", target: "cards", severity: usage >= 50 ? "danger" : "warning" });
+    }
+    if (pct > 30) insights.push({ id: "save", title: "Strong savings rate", body: `Recorded income and expenses show ${pct.toFixed(0)}% saved this month.`, action: "View goals", target: "buckets", severity: "success" });
+    if (pct < 10 && monthlyIncome > 0) insights.push({ id: "low-save", title: "Savings are below 10%", body: `Recorded income and expenses leave ${pct.toFixed(0)}% this month.`, action: "View budgets", target: "budgets", severity: "warning" });
+    if (leaks.totalAnnual > 5000) insights.push({ id: "leak", title: `Possible recurring cost: ₹${Math.round(leaks.totalAnnual).toLocaleString("en-IN")}/year`, body: "This estimate comes from recurring charges and subscriptions in your recorded data.", action: "Review costs", target: "leakage", severity: "danger" });
     if (buckets.length > 0) {
       const topGoal = buckets[0];
-      const gPct = topGoal.targetAmount > 0 ? (topGoal.savedAmount / topGoal.targetAmount) * 100 : 0;
-      insights.push({ id: "goal", title: `${topGoal.name}: ${gPct.toFixed(0)}% done`, body: `₹${topGoal.savedAmount.toLocaleString("en-IN")} of ₹${topGoal.targetAmount.toLocaleString("en-IN")} saved.`, action: "View buckets", severity: gPct > 50 ? "success" : "warning" });
+      const savedNum = sanitizeDisplayNumber(topGoal.savedAmount);
+      const targetNum = sanitizeDisplayNumber(topGoal.targetAmount);
+      const gPct = targetNum > 0 ? (savedNum / targetNum) * 100 : 0;
+      const goalName = sanitizeDisplayString(topGoal.name, "Goal");
+      insights.push({
+        id: "goal",
+        title: `${goalName}: ${gPct.toFixed(0)}% complete`,
+        body: `₹${savedNum.toLocaleString("en-IN")} of ₹${targetNum.toLocaleString("en-IN")} recorded.`,
+        action: "View goals",
+        target: "buckets",
+        severity: gPct > 50 ? "success" : "warning"
+      });
     }
+    // [P0] Behavioral anomaly detection — flags drift from the user's OWN
+    // baseline (not a generic benchmark), surfaced proactively instead of
+    // waiting for the user to open Spending Patterns to find it.
+    const anomalies = spendingAnomalies(transactions, selectedMonth, 3);
+    if (anomalies[0] && anomalies[0].direction === "spike") {
+      const a = anomalies[0];
+      insights.push({
+        id: `anomaly-${a.category}`,
+        title: `${a.category} spend is ${Math.abs(a.deviation).toFixed(0)}% above your usual`,
+        body: `You've spent ₹${Math.round(a.currentAmount).toLocaleString("en-IN")} vs your ~₹${Math.round(a.averageAmount).toLocaleString("en-IN")} average — worth a look, not a judgment.`,
+        action: "Review spending",
+        target: "spending-patterns",
+        severity: Math.abs(a.deviation) > 50 ? "danger" : "warning",
+      });
+    }
+
+    // [P0] Bill shock prevention — surfaces large recurring charges (annual
+    // insurance, quarterly fees) 2-3 weeks before they land, while there's
+    // still time to budget for them.
+    const bigBills = upcomingBigBills(transactions, 21);
+    if (bigBills[0]) {
+      const b = bigBills[0];
+      insights.push({
+        id: `bigbill-${b.title}`,
+        title: `${b.title}: ₹${b.amount.toLocaleString("en-IN")} due in ${b.dueInDays} day${b.dueInDays === 1 ? "" : "s"}`,
+        body: `This ${b.cadence} charge is coming up based on your payment history — budget for it now.`,
+        action: "View timeline",
+        target: "timeline",
+        severity: b.dueInDays <= 7 ? "danger" : "warning",
+      });
+    }
+
     if (insights.length === 0 && transactions.length === 0) {
-      insights.push({ id: "start", title: "Welcome to LiveSync!", body: "Add your first transaction to start getting personalized insights.", action: "Get started", severity: "success" });
+      insights.push({ id: "start", title: "Start your financial picture", body: "Add a transaction to unlock summaries based on your own records.", action: "Add transaction", target: "transactions", severity: "success" });
     }
     return insights.slice(0, 3);
-  }, [pct, monthlyIncome, leaks, buckets, transactions]);
+  }, [pct, monthlyIncome, leaks, buckets, transactions, creditCards, monthlyTx, selectedMonth]);
 
   // Empty state check
   const hasData = transactions.length > 0;
@@ -153,6 +209,23 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
     <>
       <Header title={`Good morning, ${userName}`} subtitle={formatMonthName(selectedMonth)} />
       <Screen>
+        {!ready ? (
+          /* ── Skeleton loader: matches actual Dashboard layout to prevent CLS ── */
+          <div className="px-5 pt-4 space-y-5 animate-pulse">
+            <div className="bg-muted rounded-2xl h-12" />
+            <div className="bg-muted rounded-2xl h-44" />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-muted rounded-2xl h-24" />
+              <div className="bg-muted rounded-2xl h-24" />
+            </div>
+            <div className="bg-muted rounded-2xl h-28" />
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-muted rounded-2xl h-20" />
+              <div className="bg-muted rounded-2xl h-20" />
+              <div className="bg-muted rounded-2xl h-20" />
+            </div>
+          </div>
+        ) : (
         <div className="px-5 pt-4 space-y-5">
           
           {/* Month Selector Carousel */}
@@ -176,7 +249,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
                   <div className="font-display" style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>
                     {healthScore}/100
                   </div>
-                  <div className="text-white/80 text-sm mt-1">{healthScore >= 70 ? "Good" : healthScore >= 40 ? "Improving" : "Needs attention"}</div>
+                  <div className="text-white/80 text-sm mt-1">{healthScore >= 80 ? "Excellent" : healthScore >= 60 ? "Good" : healthScore >= 35 ? "Improving" : "Needs attention"}</div>
                 </div>
                 <ChevronRight className="size-5 text-white/70" />
               </div>
@@ -187,6 +260,9 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
               </div>
             </div>
           </button>
+
+          {/* [P0] Cash flow forecast — projects balance forward instead of only showing history */}
+          <ForecastCard transactions={transactions} currentBalance={liquidAssets} safetyLine={Math.max(monthlyExpenses * 0.5, 5000)} />
 
           {/* Wealth intelligence row */}
           <div className="grid grid-cols-2 gap-3">
@@ -212,6 +288,24 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
             </button>
           </div>
 
+          {leaks.leaks.some((leak) => ["Micro Leaks", "Frequency", "Recurring"].includes(leak.category)) && (
+            <button onClick={() => go("leakage")} className="w-full text-left rounded-2xl border border-rose-200 bg-rose-50 p-4">
+              <div className="flex items-center gap-3">
+                <div className="size-10 rounded-xl bg-rose-600 text-white flex items-center justify-center"><Droplets className="size-5" /></div>
+                <div className="flex-1"><div className="text-sm text-rose-950" style={{ fontWeight: 700 }}>New spending leaks detected</div><div className="text-xs text-rose-700 mt-0.5">Review small spends, frequency changes, and recurring charges.</div></div>
+                <ChevronRight className="size-4 text-rose-600" />
+              </div>
+            </button>
+          )}
+
+          <button onClick={() => go("money-flow")} className="w-full text-left rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-violet-50 p-4">
+            <div className="flex items-center gap-3">
+              <div className="size-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center"><ArrowRightLeft className="size-5" /></div>
+              <div className="flex-1"><div className="text-sm" style={{ fontWeight: 700 }}>Money Flow</div><div className="text-xs text-muted-foreground">See what is left for your future</div></div>
+              <ChevronRight className="size-4 text-indigo-600" />
+            </div>
+          </button>
+
           <button onClick={() => go("timeline")} className="w-full text-left">
             <Card>
               <div className="flex items-center gap-3">
@@ -229,16 +323,30 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
 
           {/* Cash flow */}
           <Card>
-            <SectionHead title="Cash flow" subtitle="Last 6 months" onMore={() => go("reports")} />
+            <SectionHead 
+              title="Cash flow" 
+              subtitle={`6-month overview · ${formatMonthName(selectedMonth, "short")}`} 
+              onMore={() => go("reports")} 
+            />
             <div className="grid grid-cols-2 gap-3 mb-3">
-              <Stat label="Income" value={inr(monthlyIncome)} icon={<ArrowUpRight className="size-3.5" />} tone="up" />
-              <Stat label="Expenses" value={inr(monthlyExpenses)} icon={<ArrowDownRight className="size-3.5" />} tone="down" />
+              <Stat 
+                label={`Income (${formatMonthName(selectedMonth, "short")})`} 
+                value={inr(monthlyIncome)} 
+                icon={<ArrowUpRight className="size-3.5" />} 
+                tone="up" 
+              />
+              <Stat 
+                label={`Expenses (${formatMonthName(selectedMonth, "short")})`} 
+                value={inr(monthlyExpenses)} 
+                icon={<ArrowDownRight className="size-3.5" />} 
+                tone="down" 
+              />
             </div>
             {hasData ? (
               <>
-                <div className="h-32 -mx-1">
-                  <ResponsiveContainer>
-                    <AreaChart data={cashFlowData}>
+                <div className="h-36 -mx-2 pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={cashFlowData} margin={{ top: 12, right: 18, left: 18, bottom: 2 }}>
                       <defs key="dash-defs">
                         <linearGradient key="dash-grad-income" id="dash-income" x1="0" y1="0" x2="0" y2="1">
                           <stop key="i0" offset="0%" stopColor="#1E40AF" stopOpacity={0.35} />
@@ -249,14 +357,47 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
                           <stop key="e1" offset="100%" stopColor="#EF4444" stopOpacity={0} />
                         </linearGradient>
                       </defs>
-                      <XAxis key="dash-x" dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#64748B" }} />
+                      <XAxis 
+                        key="dash-x" 
+                        dataKey="month" 
+                        axisLine={false} 
+                        tickLine={false} 
+                        interval={0}
+                        padding={{ left: 8, right: 8 }}
+                        tick={{ fontSize: 11, fill: "#64748B", fontWeight: 500 }} 
+                      />
                       <Tooltip key="dash-tip" content={<ChartTip />} />
-                      <Area key="a-income" type="monotone" dataKey="income" stroke="#1E40AF" strokeWidth={2} fill="url(#dash-income)" dot={false} activeDot={false} isAnimationActive={false} legendType="none" />
-                      <Area key="a-expenses" type="monotone" dataKey="expenses" stroke="#EF4444" strokeWidth={2} fill="url(#dash-expenses)" dot={false} activeDot={false} isAnimationActive={false} legendType="none" />
+                      <Area 
+                        key="a-income" 
+                        type="monotone" 
+                        dataKey="income" 
+                        stroke="#1E40AF" 
+                        strokeWidth={2.5} 
+                        fill="url(#dash-income)" 
+                        dot={{ r: 3, fill: '#1E40AF', strokeWidth: 0 }} 
+                        activeDot={{ r: 5, fill: '#1E40AF', stroke: '#fff', strokeWidth: 2 }} 
+                        isAnimationActive={false} 
+                        legendType="none" 
+                      />
+                      <Area 
+                        key="a-expenses" 
+                        type="monotone" 
+                        dataKey="expenses" 
+                        stroke="#EF4444" 
+                        strokeWidth={2.5} 
+                        fill="url(#dash-expenses)" 
+                        dot={{ r: 3, fill: '#EF4444', strokeWidth: 0 }} 
+                        activeDot={{ r: 5, fill: '#EF4444', stroke: '#fff', strokeWidth: 2 }} 
+                        isAnimationActive={false} 
+                        legendType="none" 
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
-                {pct > 0 && <div className="text-xs text-muted-foreground mt-2">Saving rate {pct.toFixed(0)}%</div>}
+                <div className="flex items-center justify-between text-xs text-muted-foreground mt-2 pt-2 border-t border-border/40">
+                  <span>{pct > 0 ? `Savings rate: ${pct.toFixed(0)}%` : "6-month overview"}</span>
+                  <span className="font-medium text-slate-700">6-mo total: {inr(sixMonthExpenses)}</span>
+                </div>
               </>
             ) : (
               <div className="text-center py-6">
@@ -265,9 +406,9 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
             )}
           </Card>
 
-          {/* AI insights */}
+          {/* Financial Focus */}
           <Card>
-            <SectionHead title="AI insights" icon={<Sparkles className="size-4 text-primary" />} onMore={() => go("coach")} />
+            <SectionHead title="Financial Focus" icon={<Sparkles className="size-4 text-primary" />} onMore={() => go("coach")} />
             <div className="space-y-2.5">
               {dynamicInsights.map((i) => {
                 const s = severityStyle[i.severity];
@@ -277,7 +418,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
                     <div className="flex-1">
                       <div className="text-sm" style={{ fontWeight: 600 }}>{i.title}</div>
                       <div className="text-xs text-muted-foreground mt-0.5">{i.body}</div>
-                      <button className={`text-xs mt-1.5 ${s.text}`} style={{ fontWeight: 600 }}>{i.action} →</button>
+                      <button onClick={() => go(i.target)} className={`text-xs mt-1.5 ${s.text}`} style={{ fontWeight: 600 }}>{i.action} →</button>
                     </div>
                   </div>
                 );
@@ -285,21 +426,69 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
             </div>
           </Card>
 
+          {/* [P1] One-tap agentic actions — turns the insights above into
+              something the user can actually DO right now, instead of
+              advice they'd have to go act on elsewhere. Deliberately scoped
+              to in-app bucket moves + drafted messages — never a real bank
+              transfer, so this stays outside payment-aggregator licensing. */}
+          {(() => {
+            const topBucket = buckets.find((b) => b.status === "active");
+            const cancelLeak = leaks.leaks.find((l) => l.category === "Subscriptions");
+            const cancelSub = cancelLeak ? subscriptions.find((s: any) => `sub-${s.id}` === cancelLeak.id) : null;
+            if (!topBucket && !cancelSub) return null;
+            const suggestedAmount = topBucket
+              ? Math.max(500, Math.min(Math.round(netSavings * 0.2 / 100) * 100, Math.max(0, sanitizeDisplayNumber(topBucket.targetAmount) - sanitizeDisplayNumber(topBucket.savedAmount))))
+              : 0;
+            return (
+              <div className="space-y-3">
+                {topBucket && suggestedAmount >= 500 && (
+                  <ActionCard
+                    title="Put this month's surplus to work"
+                    subtitle={`You saved ${inr(netSavings)} this month — move some toward ${sanitizeDisplayString(topBucket.name, "your goal")}.`}
+                    action={{
+                      kind: "move_to_bucket",
+                      amount: suggestedAmount,
+                      bucketId: topBucket.id,
+                      bucketName: sanitizeDisplayString(topBucket.name, "your goal"),
+                      onConfirm: async (bucketId, amount) => { await addBucketContribution(bucketId, amount, "Dashboard smart action"); },
+                    }}
+                  />
+                )}
+                {cancelSub && (
+                  <ActionCard
+                    title={`Cancel ${cancelSub.name}?`}
+                    subtitle={`Flagged as unused — recover ~${inr(Math.round((cancelLeak?.annual || 0)))}/year.`}
+                    action={{
+                      kind: "draft_message",
+                      negotiationKind: "subscription_cancel",
+                      context: { name: cancelSub.name, currentAmount: cancelSub.cost || 0 },
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })()}
+
           {/* Goals */}
           <Card>
             <SectionHead title="Your goals" onMore={() => go("buckets")} />
             {buckets.length > 0 ? (
               <div className="space-y-3">
                 {buckets.slice(0, 2).map((g) => {
-                  const p = g.targetAmount > 0 ? (g.savedAmount / g.targetAmount) * 100 : 0;
+                  const saved = sanitizeDisplayNumber(g.savedAmount);
+                  const target = sanitizeDisplayNumber(g.targetAmount);
+                  const p = target > 0 ? (saved / target) * 100 : 0;
+                  const [, colorHex] = (g.iconOrColor || "PiggyBank:#1E40AF").split(":");
+                  const color = colorHex || "#1E40AF";
+                  const name = sanitizeDisplayString(g.name, "Goal");
                   return (
-                    <div key={g.id}>
+                    <div key={g.id} onClick={() => go("buckets")} className="cursor-pointer group">
                       <div className="flex justify-between items-baseline mb-1.5">
-                        <span className="text-sm font-semibold" style={{ fontWeight: 600 }}>{g.name}</span>
-                        <span className="text-xs text-muted-foreground">{inr(g.current)} / {inr(g.target)}</span>
+                        <span className="text-sm font-semibold text-slate-800 group-hover:text-primary transition" style={{ fontWeight: 600 }}>{name}</span>
+                        <span className="text-xs text-muted-foreground">{inr(saved)} / {inr(target)}</span>
                       </div>
                       <div className="h-2 bg-muted rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${p}%`, background: g.color }} />
+                        <div className="h-full rounded-full transition-all duration-300" style={{ width: `${Math.min(p, 100)}%`, background: color }} />
                       </div>
                     </div>
                   );
@@ -335,26 +524,37 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
           <Card>
             <SectionHead title="Recent activity" onMore={() => go("transactions")} />
             <div className="space-y-1">
-              {monthlyTx.slice(0, 4).map((t) => (
-                <div key={t.id} className="flex items-center gap-3 py-2">
-                  <div className={`size-9 rounded-lg flex items-center justify-center ${t.type === "income" ? "bg-emerald-50 text-emerald-600" : "bg-muted text-muted-foreground"}`}>
-                    {t.type === "income" ? <ArrowUpRight className="size-4" /> : <ArrowDownRight className="size-4" />}
+              {monthlyTx.slice(0, 4).map((t) => {
+                const title = sanitizeDisplayString(t.merchant || t.title, "Transaction");
+                const amt = sanitizeDisplayNumber(t.amount);
+                return (
+                  <div key={t.id} className="flex items-center gap-3 py-2">
+                    <div className={`size-9 rounded-lg flex items-center justify-center ${t.type === "income" ? "bg-emerald-50 text-emerald-600" : "bg-muted text-muted-foreground"}`}>
+                      {t.type === "income" ? <ArrowUpRight className="size-4" /> : <ArrowDownRight className="size-4" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate" style={{ fontWeight: 500 }}>{title}</div>
+                      <div className="text-xs text-muted-foreground">{t.category} · {t.date}</div>
+                    </div>
+                    <div className={`text-sm ${t.type === "income" ? "text-emerald-600" : ""}`} style={{ fontWeight: 600 }}>
+                      {t.type === "income" ? "+" : "-"}{inr(amt)}
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm truncate" style={{ fontWeight: 500 }}>{t.merchant || t.title}</div>
-                    <div className="text-xs text-muted-foreground">{t.category} · {t.date}</div>
-                  </div>
-                  <div className={`text-sm ${t.type === "income" ? "text-emerald-600" : ""}`} style={{ fontWeight: 600 }}>
-                    {t.type === "income" ? "+" : "-"}{inr(t.amount)}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {monthlyTx.length === 0 && (
                 <div className="text-xs text-muted-foreground text-center py-4">No transactions logged for this month.</div>
               )}
             </div>
           </Card>
+          {/* Last synced indicator */}
+          {lastSynced && (
+            <div className="text-center text-[10px] text-muted-foreground pb-2">
+              Last synced · {lastSynced.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+            </div>
+          )}
         </div>
+        )}
       </Screen>
     </>
   );
@@ -418,14 +618,24 @@ function Stat({ label, value, icon, tone }: { label: string; value: string; icon
   );
 }
 
-function ChartTip({ active, payload }: any) {
+function ChartTip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
+  const dataItem = payload[0]?.payload;
+  const monthTitle = dataItem?.fullMonth || label || "Month";
   return (
-    <div className="bg-card border border-border rounded-lg p-2 shadow-md text-xs">
+    <div className="bg-card border border-border rounded-xl p-2.5 shadow-lg text-xs space-y-1.5 min-w-[130px]">
+      <div className="font-semibold text-slate-800 border-b border-border/60 pb-1 flex items-center justify-between gap-2">
+        <span>{monthTitle}</span>
+        {dataItem?.isCurrent && (
+          <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold">Selected</span>
+        )}
+      </div>
       {payload.map((p: any, idx: number) => (
-        <div key={`${p.dataKey ?? "v"}-${idx}`} className="flex items-center gap-2">
-          <span className="size-2 rounded-full" style={{ background: p.color }} />
-          <span className="text-muted-foreground capitalize">{p.dataKey}</span>
+        <div key={`${p.dataKey ?? "v"}-${idx}`} className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="size-2 rounded-full" style={{ background: p.stroke || p.color }} />
+            <span className="text-muted-foreground capitalize">{p.dataKey}</span>
+          </div>
           <span style={{ fontWeight: 600 }}>{inr(p.value)}</span>
         </div>
       ))}

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { X, Loader2, Trash2, Clock, Lock } from "lucide-react";
+import { X, Loader2, Trash2, Clock, Lock, CreditCard } from "lucide-react";
 import { Tx, canEditTx, txEditRemaining, useStore } from "../store";
 
 export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () => void }) {
-  const { categories, updateTransaction, deleteTransaction } = useStore();
+  const { categories, updateTransaction, deleteTransaction, creditCards } = useStore();
+  const cardMap = Object.fromEntries(creditCards.map((c) => [c.id, c]));
+  const usedCard = tx?.creditCardId ? cardMap[tx.creditCardId] : null;
   const [amount, setAmount] = useState("");
   const [cat, setCat] = useState("Food");
   const [merchant, setMerchant] = useState("");
@@ -107,6 +109,28 @@ export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () =>
                 ))}
               </div>
             </Field>
+
+            {/* Credit card used — read only */}
+            {usedCard && (
+              <Field label="Paid with card">
+                <div
+                  className="flex items-center gap-3 p-3 rounded-xl border"
+                  style={{ borderColor: usedCard.color + "40", background: usedCard.color + "08" }}
+                >
+                  <div
+                    className="size-9 rounded-lg flex items-center justify-center shrink-0"
+                    style={{ background: usedCard.color + "20" }}
+                  >
+                    <CreditCard className="size-4" style={{ color: usedCard.color }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm" style={{ fontWeight: 600 }}>{usedCard.cardName}</div>
+                    <div className="text-[11px] text-muted-foreground">{usedCard.bankName} &bull;&bull;&bull;&bull; {usedCard.last4Digits}</div>
+                  </div>
+                  <Lock className="size-3.5 text-muted-foreground/50" />
+                </div>
+              </Field>
+            )}
           </>
         )}
 

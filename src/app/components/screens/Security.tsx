@@ -25,7 +25,15 @@ const DEFAULTS: Settings = {
 };
 
 export function Security({ onBack }: { onBack: () => void }) {
-  const [s, setS] = useState<Settings>(DEFAULTS);
+  const [s, setS] = useState<Settings>(() => {
+    const localOptIn = localStorage.getItem("livesync_ai_opt_in");
+    const localCatOnly = localStorage.getItem("livesync_ai_categories_only");
+    return {
+      ...DEFAULTS,
+      aiOptIn: localOptIn !== null ? localOptIn === "true" : true,
+      aiShareCategoriesOnly: localCatOnly !== null ? localCatOnly === "true" : true,
+    };
+  });
   const [loading, setLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
@@ -36,7 +44,11 @@ export function Security({ onBack }: { onBack: () => void }) {
       try {
         const items = await api.list<Settings>("settings");
         const found = items.find((x) => x.id === "preferences");
-        if (found) setS({ ...DEFAULTS, ...found });
+        if (found) {
+          setS({ ...DEFAULTS, ...found });
+          localStorage.setItem("livesync_ai_opt_in", String(found.aiOptIn ?? true));
+          localStorage.setItem("livesync_ai_categories_only", String(found.aiShareCategoriesOnly ?? true));
+        }
       } catch (e) {
         console.error("Load settings failed:", e);
       } finally {
@@ -48,6 +60,12 @@ export function Security({ onBack }: { onBack: () => void }) {
   const update = async (patch: Partial<Settings>) => {
     const next = { ...s, ...patch };
     setS(next);
+    if (patch.aiOptIn !== undefined) {
+      localStorage.setItem("livesync_ai_opt_in", String(patch.aiOptIn));
+    }
+    if (patch.aiShareCategoriesOnly !== undefined) {
+      localStorage.setItem("livesync_ai_categories_only", String(patch.aiShareCategoriesOnly));
+    }
     try {
       await api.create<Settings>("settings", next);
     } catch (e) {
@@ -132,7 +150,7 @@ export function Security({ onBack }: { onBack: () => void }) {
               <div className="text-sm" style={{ fontWeight: 700 }}>Cloud security</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              TLS 1.3 encryption in transit, AES-256 encryption at rest (Supabase platform-level). All data is user-isolated via authenticated API access. You can export or delete your data at any time.
+              The app uses authenticated API access and encrypts supported sensitive fields before upload. Cloud-provider protections and network encryption are important layers, but no service can guarantee absolute security.
             </p>
           </div>
 
@@ -155,8 +173,8 @@ export function Security({ onBack }: { onBack: () => void }) {
             <SharingRow ok label="Aggregated category totals (e.g. ₹4,200 on Food this week)" />
             <SharingRow ok label="Goal progress, budget utilisation, runway months" />
             <SharingRow ok={s.aiShareCategoriesOnly ? false : true} label="Individual transaction merchants (e.g. 'Swiggy', 'BigBasket')" warn={!s.aiShareCategoriesOnly} />
-            <SharingRow ok={false} label="Bank account numbers, balances, PAN / Aadhaar — NEVER shared" never />
-            <SharingRow ok={false} label="Documents in your vault — NEVER shared" never />
+            <SharingRow ok={false} label="Bank credentials and passwords are not requested by the AI Coach" never />
+            <SharingRow ok={false} label="Vault file contents are not sent through the app's current AI flows" never />
             <div className="p-3 border-t border-border/60 space-y-3">
               <Toggle icon={<Brain className="size-4" />} label="AI Coach insights" sub="Personalised tips on spending & goals" value={s.aiOptIn} onChange={() => update({ aiOptIn: !s.aiOptIn })} flat />
               <Toggle icon={s.aiShareCategoriesOnly ? <EyeOff className="size-4" /> : <Eye className="size-4" />} label="Hide merchant names from AI" sub="Send only categories, not individual shops" value={s.aiShareCategoriesOnly} onChange={() => update({ aiShareCategoriesOnly: !s.aiShareCategoriesOnly })} flat />
@@ -165,7 +183,7 @@ export function Security({ onBack }: { onBack: () => void }) {
               <div className="flex items-center gap-1.5 mb-1 text-foreground" style={{ fontWeight: 600 }}>
                 <Server className="size-3" /> How AI works
               </div>
-              Server-side AI features use Google Gemini. Bring-your-own-key mode uses Groq (Llama). AI prompts are not stored after processing. No data is used to train third-party models.
+              Merchant categorisation can use Google Gemini through LiveSync. Bring-your-own-key Coach uses Groq directly from the app. Each provider handles submitted data under its own terms and privacy policy.
             </div>
           </Section>
 
@@ -178,7 +196,7 @@ export function Security({ onBack }: { onBack: () => void }) {
             <div className="flex items-center gap-2 text-foreground mb-2" style={{ fontWeight: 700 }}>
               <Shield className="size-3.5 text-primary" /> Support
             </div>
-            For privacy concerns, email <span className="text-foreground">privacy@livesync.app</span>. We respond within 7 business days.
+            For privacy concerns, email <a className="text-foreground underline" href="mailto:niteshjha.uiux@yahoo.com">niteshjha.uiux@yahoo.com</a>. We aim to respond within 7 business days.
           </div>
         </div>
       </Screen>

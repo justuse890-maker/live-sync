@@ -173,7 +173,7 @@ export function Privacy({ onBack }: { onBack: () => void }) {
             <RightRow title="Export your data" body="Download all your personal data as JSON from Security → Export." />
             <RightRow title="Edit your data" body="Edit transactions for 5 minutes after creation. For older entries, add an offsetting transaction or contact support." />
             <RightRow title="Delete your data" body="Delete your account and all data from Security → Delete my account. Deletion is immediate and irreversible." />
-            <RightRow title="Get support" body="Email privacy@livesync.app for any data-related questions. We respond within 7 business days." />
+            <RightRow title="Get support" body="Email niteshjha.uiux@yahoo.com for data-related questions. We aim to respond within 7 business days." />
           </Section>
 
           <div className="bg-card rounded-2xl p-4 border border-border/60 text-xs text-muted-foreground leading-relaxed">

@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
-import { Plus, ArrowDownLeft, ArrowUpRight, Bell, Check, Trash2, X, Building2, Car, GraduationCap, User, Home, CreditCard, ChevronDown, ChevronUp, AlertTriangle, Calendar } from "lucide-react";
+import { Plus, ArrowDownLeft, ArrowUpRight, Bell, Check, Trash2, X, Building2, Car, GraduationCap, User, Home, CreditCard, ChevronDown, ChevronUp, AlertTriangle, Calendar, Palette } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { inr } from "../types";
-import { Loan, PaymentMode, StructuredLoan, StructuredLoanType, BuilderMilestone, useStore } from "../../store";
+import { Loan, PaymentMode, StructuredLoan, StructuredLoanType, BuilderMilestone, CreditCard as CreditCardData, useStore } from "../../store";
 
 const paymentLabel: Record<PaymentMode, string> = { cash: "Cash", upi: "UPI", credit: "Credit", debit: "Debit", other: "Other" };
 
@@ -44,10 +44,11 @@ function annualInterestPaid(emi: number, principal: number, emisPaid: number, te
 }
 
 export function Loans({ onBack }: { onBack: () => void }) {
-  const { loans, addLoan, settleLoan, removeLoan, structuredLoans, addStructuredLoan, updateStructuredLoan, removeStructuredLoan, properties } = useStore();
-  const [tab, setTab] = useState<"structured" | "personal">("structured");
+  const { loans, addLoan, settleLoan, removeLoan, structuredLoans, addStructuredLoan, updateStructuredLoan, removeStructuredLoan, properties, creditCards, addCreditCard, removeCreditCard } = useStore();
+  const [tab, setTab] = useState<"structured" | "personal" | "cards">("structured");
   const [openAdd, setOpenAdd] = useState(false);
   const [openPersonal, setOpenPersonal] = useState(false);
+  const [openAddCard, setOpenAddCard] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const activePersonal = loans.filter((l) => !l.settled);
@@ -88,6 +89,9 @@ export function Loans({ onBack }: { onBack: () => void }) {
             </button>
             <button onClick={() => setTab("personal")} className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${tab === "personal" ? "bg-card shadow-sm text-slate-900" : "text-muted-foreground"}`}>
               Personal
+            </button>
+            <button onClick={() => setTab("cards")} className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${tab === "cards" ? "bg-card shadow-sm text-slate-900" : "text-muted-foreground"}`}>
+              Cards
             </button>
           </div>
 
@@ -169,6 +173,62 @@ export function Loans({ onBack }: { onBack: () => void }) {
             </>
           )}
 
+          {/* === CREDIT CARDS TAB === */}
+          {tab === "cards" && (
+            <>
+              {/* Summary pill */}
+              <div className="bg-gradient-to-br from-violet-500 to-violet-700 text-white rounded-2xl p-4 shadow-md shadow-violet-500/20">
+                <div className="text-xs font-semibold text-violet-100">My Credit Cards</div>
+                <div className="font-display text-xl font-black mt-1">{creditCards.length} Card{creditCards.length !== 1 ? "s" : ""}</div>
+                <div className="text-[11px] text-violet-100 mt-1">Saved for expense tracking</div>
+              </div>
+
+              <button
+                onClick={() => setOpenAddCard(true)}
+                className="w-full rounded-2xl border-2 border-dashed border-border text-muted-foreground py-3.5 flex items-center justify-center gap-2 hover:bg-card hover:border-violet-400 transition"
+              >
+                <Plus className="size-4" />
+                <span className="text-sm font-semibold">Add Credit Card</span>
+              </button>
+
+              {creditCards.length === 0 && (
+                <div className="text-center py-8 text-sm text-muted-foreground px-4">
+                  Add your credit cards here. When logging an expense, select Credit as payment mode and choose the card used — so you always know which card paid for what.
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {creditCards.map((card) => (
+                  <div
+                    key={card.id}
+                    className="bg-card rounded-2xl border border-border/60 p-4 flex items-center gap-3 shadow-sm"
+                  >
+                    {/* Card art */}
+                    <div
+                      className="size-12 rounded-xl flex items-center justify-center shrink-0"
+                      style={{ background: `linear-gradient(135deg, ${card.color}dd, ${card.color}88)` }}
+                    >
+                      <CreditCard className="size-6 text-white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate">{card.cardName}</div>
+                      <div className="text-xs text-muted-foreground">{card.bankName} &bull;&bull;&bull;&bull; {card.last4Digits}</div>
+                      {Boolean(card.creditLimit && card.creditLimit > 0) && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5">Limit: {inr(card.creditLimit!)}</div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeCreditCard(card.id)}
+                      className="size-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-100 transition shrink-0"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
         </div>
       </Screen>
 
@@ -183,6 +243,12 @@ export function Loans({ onBack }: { onBack: () => void }) {
         <AddPersonalLoanSheet
           onClose={() => setOpenPersonal(false)}
           onSave={async (l) => { await addLoan(l); setOpenPersonal(false); }}
+        />
+      )}
+      {openAddCard && (
+        <AddCreditCardSheet
+          onClose={() => setOpenAddCard(false)}
+          onSave={async (c) => { await addCreditCard(c); setOpenAddCard(false); }}
         />
       )}
     </>
@@ -219,7 +285,9 @@ function StructuredLoanCard({
         </div>
         <div className="flex-1 min-w-0">
           <div className="font-bold text-sm text-slate-900">{loan.lenderName}</div>
-          <div className="text-xs text-muted-foreground">{cfg.label}{linkedProp ? ` · ${linkedProp.name}` : ""}</div>
+          <div className="text-xs text-muted-foreground">
+            {cfg.label}{linkedProp ? ` · ${linkedProp.name}` : ""} · <span className="font-semibold text-slate-700">{loan.interestRatePA}% p.a.</span>
+          </div>
         </div>
         <div className="text-right mr-2">
           <div className="font-bold text-sm text-slate-900">{inr(outstanding)}</div>
@@ -345,28 +413,31 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
   const isBuilderOrReg = loanType === "builder_demand" || loanType === "property_registration";
 
   const submit = async () => {
-    if (!lenderName || !principal) return;
+    if (!lenderName.trim() || !principal || saving) return;
     setSaving(true);
-    await onSave({
-      loanType,
-      lenderName,
-      linkedPropertyId: linkedPropertyId || undefined,
-      principalAmount: p,
-      outstandingPrincipal: outstandingPrincipal(p, r, t, Number(emisPaid)),
-      interestRatePA: r,
-      tenureMonths: t,
-      emiAmount: emi,
-      disbursementDate,
-      nextEmiDueDate,
-      emisPaid: Number(emisPaid),
-      totalEmis: t,
-      isRegistrationLoan: loanType === "property_registration",
-      builderMilestones: milestones.length > 0 ? milestones : undefined,
-      notes: notes || undefined,
-      closed: false,
-      createdAt: new Date().toISOString(),
-    });
-    setSaving(false);
+    try {
+      await onSave({
+        loanType,
+        lenderName: lenderName.trim(),
+        linkedPropertyId: linkedPropertyId || undefined,
+        principalAmount: p,
+        outstandingPrincipal: outstandingPrincipal(p, r, t, Number(emisPaid)),
+        interestRatePA: r,
+        tenureMonths: t,
+        emiAmount: emi,
+        disbursementDate,
+        nextEmiDueDate,
+        emisPaid: Number(emisPaid),
+        totalEmis: t,
+        isRegistrationLoan: loanType === "property_registration",
+        builderMilestones: milestones.length > 0 ? milestones : undefined,
+        notes: notes ? notes.trim() : undefined,
+        closed: false,
+        createdAt: new Date().toISOString(),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -570,10 +641,13 @@ function AddPersonalLoanSheet({ onClose, onSave }: { onClose: () => void; onSave
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
-    if (!person || !amount) return;
+    if (!person.trim() || !amount || saving) return;
     setSaving(true);
-    await onSave({ direction, person, amount: Number(amount), mode, takenOn: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }), repayBy, notes: notes || undefined });
-    setSaving(false);
+    try {
+      await onSave({ direction, person: person.trim(), amount: Number(amount), mode, takenOn: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }), repayBy, notes: notes ? notes.trim() : undefined });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -602,7 +676,9 @@ function AddPersonalLoanSheet({ onClose, onSave }: { onClose: () => void; onSave
         </Label>
         <Label label="Repay by"><input type="date" value={repayBy} onChange={(e) => setRepayBy(e.target.value)} className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none" /></Label>
         <Label label="Notes (optional)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="What's it for?" className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none resize-none" /></Label>
-        <button onClick={submit} disabled={!person || !amount || saving} className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 font-bold">Save loan</button>
+        <button onClick={submit} disabled={!person || !amount || saving} className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 font-bold">
+          {saving ? "Saving…" : "Save loan"}
+        </button>
       </div>
     </div>
   );
@@ -613,6 +689,154 @@ function Label({ label, children }: { label: string; children: React.ReactNode }
     <div className="mb-0.5">
       <div className="text-xs text-muted-foreground mb-1.5 font-semibold">{label}</div>
       {children}
+    </div>
+  );
+}
+
+// ===================== ADD CREDIT CARD SHEET =====================
+const CARD_COLORS = ["#8B5CF6", "#1E40AF", "#10B981", "#EF4444", "#F59E0B", "#0EA5E9", "#EC4899", "#64748B", "#DC2626", "#0D9488"];
+
+function AddCreditCardSheet({
+  onClose,
+  onSave,
+}: {
+  onClose: () => void;
+  onSave: (c: Omit<CreditCardData, "id">) => Promise<void>;
+}) {
+  const [cardName, setCardName] = useState("");
+  const [bankName, setBankName] = useState("");
+  const [last4, setLast4] = useState("");
+  const [creditLimit, setCreditLimit] = useState("");
+  const [statementDate, setStatementDate] = useState("1");
+  const [color, setColor] = useState("#8B5CF6");
+  const [saving, setSaving] = useState(false);
+
+  const canSave = cardName.trim() && bankName.trim() && last4.trim().length === 4;
+
+  const submit = async () => {
+    if (!canSave || saving) return;
+    setSaving(true);
+    try {
+      await onSave({
+        cardName: cardName.trim(),
+        bankName: bankName.trim(),
+        last4Digits: last4.trim(),
+        creditLimit: Number(creditLimit) || 0,
+        statementDate: Number(statementDate) || 1,
+        dueDate: 20,
+        color,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div onClick={(e) => e.stopPropagation()} className="relative w-full max-h-[92%] overflow-y-auto bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200 space-y-4">
+
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <div className="font-display text-lg font-bold">Add Credit Card</div>
+            <div className="text-xs text-muted-foreground mt-0.5">Saved once, select when paying</div>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Card Preview */}
+        <div
+          className="w-full rounded-2xl p-5 flex flex-col gap-2 shadow-lg"
+          style={{ background: `linear-gradient(135deg, ${color}ee, ${color}99)` }}
+        >
+          <div className="flex justify-between items-start">
+            <CreditCard className="size-6 text-white/90" />
+            <div className="text-white/80 text-xs font-semibold">{bankName || "Bank Name"}</div>
+          </div>
+          <div className="mt-2 text-white/60 text-sm tracking-widest">•••• •••• •••• {last4 || "0000"}</div>
+          <div className="text-white font-bold text-base">{cardName || "Card Name"}</div>
+        </div>
+
+        {/* Card Name */}
+        <Label label="Card name">
+          <input
+            value={cardName}
+            onChange={(e) => setCardName(e.target.value)}
+            placeholder="e.g. HDFC Regalia, Axis Flipkart"
+            className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-violet-300"
+          />
+        </Label>
+
+        {/* Bank + Last 4 */}
+        <div className="grid grid-cols-2 gap-3">
+          <Label label="Bank">
+            <input
+              value={bankName}
+              onChange={(e) => setBankName(e.target.value)}
+              placeholder="e.g. HDFC, SBI"
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-violet-300"
+            />
+          </Label>
+          <Label label="Last 4 digits">
+            <input
+              value={last4}
+              onChange={(e) => setLast4(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="4321"
+              inputMode="numeric"
+              maxLength={4}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none tracking-widest focus:ring-2 focus:ring-violet-300"
+            />
+          </Label>
+        </div>
+
+        {/* Credit Limit + Statement Date */}
+        <div className="grid grid-cols-2 gap-3">
+          <Label label="Credit limit (optional)">
+            <input
+              value={creditLimit}
+              onChange={(e) => setCreditLimit(e.target.value.replace(/\D/g, ""))}
+              placeholder="e.g. 200000"
+              inputMode="numeric"
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-violet-300"
+            />
+          </Label>
+          <Label label="Statement date">
+            <input
+              value={statementDate}
+              onChange={(e) => setStatementDate(e.target.value.replace(/\D/g, "").slice(0, 2))}
+              placeholder="1–28"
+              inputMode="numeric"
+              maxLength={2}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-violet-300"
+            />
+          </Label>
+        </div>
+
+        {/* Color Picker */}
+        <Label label="Card colour">
+          <div className="flex gap-2.5 flex-wrap">
+            {CARD_COLORS.map((c) => (
+              <button
+                key={c}
+                onClick={() => setColor(c)}
+                className={`size-8 rounded-full transition border-2 ${color === c ? "border-foreground scale-110 shadow-md" : "border-transparent"}`}
+                style={{ background: c }}
+              />
+            ))}
+          </div>
+        </Label>
+
+        <button
+          onClick={submit}
+          disabled={!canSave || saving}
+          className="w-full bg-violet-600 text-white rounded-xl py-3.5 text-sm disabled:opacity-40 font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-transform"
+        >
+          {saving ? <span className="animate-pulse">Saving…</span> : "Save card"}
+        </button>
+      </div>
     </div>
   );
 }

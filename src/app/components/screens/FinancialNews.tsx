@@ -248,7 +248,7 @@ function NotifPanel({ onClose }: { onClose: () => void }) {
 
         {/* Legal note */}
         <div className="text-[11px] text-muted-foreground leading-relaxed px-1">
-          News articles display headline + short snippet only. Full content is always read on the publisher's site. Sources: PIB (Govt. of India), UN News, The Guardian Open Platform.
+          News articles display headline + short snippet only. Full content is always read on the publisher's site. All sources are official government or intergovernmental public-domain feeds (PIB, RBI, SEBI, Ministry of Finance, UN News).
         </div>
 
         <button onClick={onClose} className="w-full bg-primary text-primary-foreground rounded-2xl py-3.5 text-sm"
@@ -470,7 +470,6 @@ export function FinancialNews({ onBack }: { onBack: () => void }) {
               <div className="flex flex-wrap items-center gap-2 pb-1">
                 <span className="text-[11px] text-muted-foreground">Sources:</span>
                 <TierBadge tier="government" label="Official govt. source" />
-                <TierBadge tier="licensed" label="Licensed news partner" />
               </div>
 
               {filtered.map((article) => (
@@ -503,8 +502,19 @@ export function FinancialNews({ onBack }: { onBack: () => void }) {
               </button>
 
               {/* Legal footer */}
-              <div className="px-1 py-2 text-[10px] text-muted-foreground leading-relaxed">
-                LiveSync AI shows headlines + short snippets only. Full articles are read on the publisher's website. Sources: PIB (Govt. of India, public domain), UN News (intergovernmental, public domain), The Guardian (Open Platform, free tier). Terms verified July 2026.
+              <div className="px-1 py-2 text-[10px] text-muted-foreground leading-relaxed space-y-2">
+                <div>
+                  LiveSync AI displays headlines and short snippets only from official government and public-domain RSS feeds. Full articles are always read on the publisher's website. We do not copy, reproduce, or republish any copyrighted content.
+                </div>
+                <div>
+                  Sources: PIB (Govt. of India, public domain), RBI (public domain), SEBI (public domain), Ministry of Finance India (public domain), UN News (intergovernmental, public domain).
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 text-amber-800" style={{ fontSize: 11 }}>
+                  <div style={{ fontWeight: 700 }}>📋 Copyright Notice</div>
+                  <div className="mt-1">If you believe any content displayed here infringes your copyright or intellectual property rights, please contact us immediately for removal:</div>
+                  <a href="mailto:niteshjha.uiux@yahoo.com" className="text-amber-900 underline mt-1 block" style={{ fontWeight: 600 }}>niteshjha.uiux@yahoo.com</a>
+                  <div className="mt-1">We will promptly review and remove any disputed content within 48 hours.</div>
+                </div>
               </div>
             </div>
           )}

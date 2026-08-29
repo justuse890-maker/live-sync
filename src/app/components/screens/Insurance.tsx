@@ -28,6 +28,7 @@ const policyNames = {
 export function Insurance({ onBack }: { onBack: () => void }) {
   const { insurance, addInsurance, removeInsurance } = useStore();
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form State
   const [name, setName] = useState("");
@@ -44,29 +45,35 @@ export function Insurance({ onBack }: { onBack: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !coverageAmount || !premiumAmount || !dueDate || !insurer) return;
-    await addInsurance({
-      name,
-      type,
-      policyNumber: policyNumber || undefined,
-      coverageAmount: parseFloat(coverageAmount),
-      premiumAmount: parseFloat(premiumAmount),
-      dueDate,
-      insurer,
-      membersCovered: membersCovered ? membersCovered.split(",").map(m => m.trim()) : ["Self"],
-      notes: notes || undefined,
-    });
-    // Reset Form
-    setName("");
-    setType("health");
-    setPolicyNumber("");
-    setCoverageAmount("");
-    setPremiumAmount("");
-    setDueDate("");
-    setInsurer("");
-    setMembersCovered("");
-    setNotes("");
-    setOpen(false);
+    setSubmitting(true);
+    try {
+      await addInsurance({
+        name: name.trim(),
+        type,
+        policyNumber: policyNumber ? policyNumber.trim() : undefined,
+        coverageAmount: parseFloat(coverageAmount),
+        premiumAmount: parseFloat(premiumAmount),
+        dueDate,
+        insurer: insurer.trim(),
+        membersCovered: membersCovered ? membersCovered.split(",").map(m => m.trim()) : ["Self"],
+        notes: notes ? notes.trim() : undefined,
+      });
+      // Reset Form
+      setName("");
+      setType("health");
+      setPolicyNumber("");
+      setCoverageAmount("");
+      setPremiumAmount("");
+      setDueDate("");
+      setInsurer("");
+      setMembersCovered("");
+      setNotes("");
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -143,7 +150,9 @@ export function Insurance({ onBack }: { onBack: () => void }) {
                   <label className="text-xs text-muted-foreground font-semibold">Notes</label>
                   <Input placeholder="Additional notes or links" value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button type="submit" className="w-full mt-2">Add Policy</Button>
+                <Button type="submit" disabled={submitting} className="w-full mt-2">
+                  {submitting ? "Adding Policy..." : "Add Policy"}
+                </Button>
               </form>
             </DialogContent>
           </Dialog>

@@ -7,8 +7,8 @@ android {
         applicationId "com.livesync.ai"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "2.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
@@ -18,6 +18,15 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+        // A separately installable APK for investor demonstrations. It uses
+        // the same signed web bundle but never replaces the production app.
+        investorDemo {
+            initWith debug
+            applicationIdSuffix ".demo"
+            versionNameSuffix "-investor-demo"
+            // Capacitor plugins expose debug/release variants only.
+            matchingFallbacks = ["debug"]
         }
     }
     // Force Java 17 across all modules (installed JDK version)

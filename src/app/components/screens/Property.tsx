@@ -19,6 +19,7 @@ const propTypes = {
 export function PropertyScreen({ onBack }: { onBack: () => void }) {
   const { properties, addProperty, removeProperty } = useStore();
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form State
   const [name, setName] = useState("");
@@ -37,27 +38,33 @@ export function PropertyScreen({ onBack }: { onBack: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !purchasePrice || !currentValuation || !purchaseDate) return;
-    await addProperty({
-      name,
-      type,
-      purchasePrice: parseFloat(purchasePrice),
-      currentValuation: parseFloat(currentValuation),
-      purchaseDate,
-      rentalIncome: rentalIncome ? parseFloat(rentalIncome) : undefined,
-      propertyTaxDueDate: propertyTaxDueDate || undefined,
-      notes: notes || undefined,
-    });
-    // Reset Form
-    setName("");
-    setType("residential");
-    setPurchasePrice("");
-    setCurrentValuation("");
-    setPurchaseDate("");
-    setRentalIncome("");
-    setPropertyTaxDueDate("");
-    setNotes("");
-    setOpen(false);
+    setSubmitting(true);
+    try {
+      await addProperty({
+        name: name.trim(),
+        type,
+        purchasePrice: parseFloat(purchasePrice),
+        currentValuation: parseFloat(currentValuation),
+        purchaseDate,
+        rentalIncome: rentalIncome ? parseFloat(rentalIncome) : undefined,
+        propertyTaxDueDate: propertyTaxDueDate || undefined,
+        notes: notes ? notes.trim() : undefined,
+      });
+      // Reset Form
+      setName("");
+      setType("residential");
+      setPurchasePrice("");
+      setCurrentValuation("");
+      setPurchaseDate("");
+      setRentalIncome("");
+      setPropertyTaxDueDate("");
+      setNotes("");
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -127,7 +134,9 @@ export function PropertyScreen({ onBack }: { onBack: () => void }) {
                   <label className="text-xs text-muted-foreground font-semibold">Notes</label>
                   <Input placeholder="Registration details, tenant info, locker docs" value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button type="submit" className="w-full mt-2">Add Property</Button>
+                <Button type="submit" disabled={submitting} className="w-full mt-2">
+                  {submitting ? "Adding Property..." : "Add Property"}
+                </Button>
               </form>
             </DialogContent>
           </Dialog>

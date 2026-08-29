@@ -36,6 +36,7 @@ export type ScreenId =
   | "gold"
   | "property"
   | "creditscore"
+  | "cards"
   | "fraud"
   | "pricing"
   | "news"
@@ -44,7 +45,9 @@ export type ScreenId =
   | "terms"
   | "contact"
   | "data-safety"
-  | "cloud-backup";
+  | "cloud-backup"
+  | "spending-patterns"
+  | "money-flow";
 
 
 export const inr = (n: number) =>

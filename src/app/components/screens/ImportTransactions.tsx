@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Upload, Sparkles, Loader2, Check, AlertTriangle, ChevronDown, ChevronUp, Plus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Upload, Sparkles, Loader2, Check, AlertTriangle, ChevronDown, ChevronUp, Plus, ShieldCheck } from "lucide-react";
 import { Screen } from "../Shell";
 import { PremiumLock } from "../PremiumLock";
 import { useStore, Tx } from "../../store";
@@ -80,6 +80,14 @@ function normaliseDate(raw: string): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function comparisonText(value: string | undefined) {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 80);
+}
+
+function comparisonKey(date: string, amount: number, type: "income" | "expense", description: string) {
+  return `${date}|${Math.round(amount * 100)}|${type}|${comparisonText(description)}`;
+}
+
 export function ImportTransactions({ onBack, onUpgrade }: { onBack: () => void; onUpgrade: () => void }) {
   return (
     <Screen>
@@ -103,7 +111,7 @@ export function ImportTransactions({ onBack, onUpgrade }: { onBack: () => void; 
 }
 
 function Importer() {
-  const { addTransaction, categories, addCategory } = useStore();
+  const { addTransaction, categories, addCategory, transactions } = useStore();
   const { entitlements } = useEntitlements();
   const { country } = useCountry();
   const [step, setStep] = useState<Step>("upload");
@@ -115,6 +123,8 @@ function Importer() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [committing, setCommitting] = useState(false);
   const [committedCount, setCommittedCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
+  const [includeDuplicates, setIncludeDuplicates] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const onFile = async (f: File) => {
@@ -166,6 +176,26 @@ function Importer() {
     }).filter((r) => r.raw && r.amount > 0);
   }, [rows, headers, mapping]);
 
+  const duplicateInfo = useMemo(() => {
+    const existingKeys = new Set(transactions.map((tx) => comparisonKey(tx.date, Math.abs(tx.amount), tx.type, tx.merchant || tx.title)));
+    const seenInFile = new Set<string>();
+    const duplicateIndexes = new Set<number>();
+    let existing = 0;
+    let inFile = 0;
+    for (const row of rawRows) {
+      const key = comparisonKey(row.date, row.amount, row.type, row.raw);
+      if (existingKeys.has(key)) { duplicateIndexes.add(row.sourceIndex); existing++; }
+      else if (seenInFile.has(key)) { duplicateIndexes.add(row.sourceIndex); inFile++; }
+      seenInFile.add(key);
+    }
+    return { duplicateIndexes, existing, inFile };
+  }, [rawRows, transactions]);
+
+  const selectedRows = useMemo(
+    () => includeDuplicates ? rawRows : rawRows.filter((row) => !duplicateInfo.duplicateIndexes.has(row.sourceIndex)),
+    [includeDuplicates, rawRows, duplicateInfo],
+  );
+
   const startReview = async () => {
     const c = clusterRows(rawRows);
     setClusters(c);
@@ -214,6 +244,7 @@ function Importer() {
   const commit = async () => {
     setCommitting(true);
     setCommittedCount(0);
+    setSkippedCount(0);
     try {
       // Build flat list of tx writes from rows + cluster assignments
       const clusterByRow = new Map<number, Cluster>();
@@ -224,7 +255,8 @@ function Importer() {
       }
       for (const c of newCats) await addCategory(c);
 
-      for (const r of rawRows) {
+      setSkippedCount(rawRows.length - selectedRows.length);
+      for (const r of selectedRows) {
         const cl = clusterByRow.get(r.sourceIndex);
         const tx: Omit<Tx, "id"> = {
           title: cl?.canonical || r.raw.slice(0, 40),
@@ -247,8 +279,8 @@ function Importer() {
     }
   };
 
-  const totalIncome = rawRows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
-  const totalExpense = rawRows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+  const totalIncome = selectedRows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
+  const totalExpense = selectedRows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
 
   return (
     <div className="space-y-4">
@@ -258,11 +290,12 @@ function Importer() {
         <div className="rounded-2xl border border-dashed border-border bg-card p-6 text-center space-y-3">
           <Upload className="size-8 mx-auto text-muted-foreground" />
           <div className="text-sm font-medium">Upload a CSV</div>
-          <div className="text-xs text-muted-foreground">Bank statements, exports from Walnut / Money Manager / Splitwise — anything with date, description, and amount.</div>
+          <div className="text-xs text-muted-foreground">Any CSV with a date, description and amount. Your file is previewed before anything is saved.</div>
           <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
           <button onClick={() => fileRef.current?.click()} className="h-10 px-4 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 inline-flex items-center gap-2">
             <Upload className="size-4" /> Choose CSV file
           </button>
+          <div className="pt-1 text-[11px] text-muted-foreground flex items-center justify-center gap-1.5"><ShieldCheck className="size-3.5 text-emerald-600" /> LiveSync never asks for a bank password, PIN or OTP.</div>
         </div>
       )}
 
@@ -284,7 +317,7 @@ function Importer() {
 
           {rawRows.length > 0 && (
             <div className="mt-3 border-t border-border pt-3">
-              <div className="text-xs text-muted-foreground mb-2">Preview ({rawRows.length} usable rows):</div>
+              <div className="text-xs text-muted-foreground mb-2">Source preview · {rawRows.length} usable rows · nothing saved yet</div>
               <div className="space-y-1 max-h-40 overflow-auto">
                 {rawRows.slice(0, 5).map((r, i) => (
                   <div key={i} className="text-xs flex items-center justify-between gap-2">
@@ -312,7 +345,7 @@ function Importer() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">{clusters.length} merchants found</div>
-                <div className="text-xs text-muted-foreground">From {rawRows.length} rows — duplicates auto-merged.</div>
+                <div className="text-xs text-muted-foreground">From {rawRows.length} usable rows. Merchant names are grouped only for review.</div>
               </div>
               <button
                 onClick={() => runAi(clusters)}
@@ -330,6 +363,14 @@ function Importer() {
             )}
           </div>
 
+          {duplicateInfo.duplicateIndexes.size > 0 && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-950">
+              <div className="font-semibold">{duplicateInfo.duplicateIndexes.size} possible duplicate{duplicateInfo.duplicateIndexes.size === 1 ? "" : "s"} found</div>
+              <p className="mt-1 text-amber-800">Matched by date, amount, direction and description: {duplicateInfo.existing} already in LiveSync, {duplicateInfo.inFile} repeated in this file.</p>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer font-medium"><input type="checkbox" checked={includeDuplicates} onChange={(e) => setIncludeDuplicates(e.target.checked)} /> Import them anyway</label>
+            </div>
+          )}
+
           <div className="space-y-2">
             {clusters.map((cl) => (
               <ClusterRow key={cl.id} cluster={cl} categories={categories} onChange={(p) => updateCluster(cl.id, p)} onAddCategory={addCategory} country={country} />
@@ -338,11 +379,11 @@ function Importer() {
 
           <button
             onClick={commit}
-            disabled={committing}
+            disabled={committing || selectedRows.length === 0}
             className="w-full h-11 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center justify-center gap-2"
           >
             {committing ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
-            Import {rawRows.length} transactions
+            Import {selectedRows.length} transactions
           </button>
         </div>
       )}
@@ -354,11 +395,12 @@ function Importer() {
           <div className="text-sm text-muted-foreground">
             +{fmt(totalIncome, country)} income · -{fmt(totalExpense, country)} expense
           </div>
+          {skippedCount > 0 && <div className="text-xs text-muted-foreground">Skipped {skippedCount} possible duplicate{skippedCount === 1 ? "" : "s"}. You can import them manually if needed.</div>}
         </div>
       )}
 
       {committing && (
-        <div className="text-xs text-center text-muted-foreground">Saving {committedCount} / {rawRows.length}…</div>
+        <div className="text-xs text-center text-muted-foreground">Saving {committedCount} / {selectedRows.length}…</div>
       )}
     </div>
   );

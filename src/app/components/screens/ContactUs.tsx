@@ -1,7 +1,8 @@
 import { Mail, MessageCircle, Clock, MapPin, Shield, ExternalLink } from "lucide-react";
 import { Header, Screen } from "../Shell";
+import { APP_VERSION } from "../../data";
 
-const CONTACT_EMAIL = "mail.com"; // TODO: replace with actual email
+const CONTACT_EMAIL = "niteshjha.uiux@yahoo.com";
 const APP_NAME = "LiveSync AI";
 const COMPANY = "LiveSync Technologies";
 
@@ -82,18 +83,19 @@ export function ContactUs({ onBack }: { onBack: () => void }) {
               <Shield className="size-4 text-primary" />
               <div>
                 <div className="text-xs" style={{ fontWeight: 600 }}>{COMPANY}</div>
+                <div className="text-[11px] text-muted-foreground">Mumbai, Maharashtra, India</div>
                 <div className="text-xs text-muted-foreground">{CONTACT_EMAIL}</div>
               </div>
             </div>
             <p className="text-xs text-muted-foreground mt-2">
-              Response guaranteed within <span style={{ fontWeight: 600 }}>7 business days</span> as per DPDP Act requirements.
+              We aim to respond within <span style={{ fontWeight: 600 }}>7 business days</span>.
             </p>
           </div>
 
           {/* Future updates */}
           <div className="bg-muted/40 rounded-2xl p-4 text-xs text-muted-foreground leading-relaxed text-center">
             <p>In future updates, we'll add live chat support and a help centre. Stay tuned!</p>
-            <p className="mt-1" style={{ fontWeight: 600 }}>App version: v1.0.0</p>
+            <p className="mt-1" style={{ fontWeight: 600 }}>App version: v{APP_VERSION}</p>
           </div>
         </div>
       </Screen>

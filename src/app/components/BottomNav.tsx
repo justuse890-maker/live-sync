@@ -12,7 +12,7 @@ const tabs: { id: ScreenId; label: string; icon: typeof Home }[] = [
 
 export function BottomNav({ active, onChange, onAdd }: { active: ScreenId; onChange: (id: ScreenId) => void; onAdd: () => void }) {
   return (
-    <div className="absolute bottom-0 inset-x-0 z-30">
+    <div className="bottom-nav relative z-30">
       <button
         onClick={() => { hapticLight(); onAdd(); }}
         className="absolute bottom-full mb-4 right-4 size-14 rounded-full bg-primary text-primary-foreground shadow-xl shadow-primary/30 flex items-center justify-center active:scale-90 transition-transform duration-150 z-40"
@@ -21,7 +21,7 @@ export function BottomNav({ active, onChange, onAdd }: { active: ScreenId; onCha
         <Plus className="size-6" />
       </button>
       <div className="bg-card border-t border-border px-2 pt-2 pb-3 flex relative z-30">
-        {tabs.map((t, i) => {
+        {tabs.map((t) => {
           const Icon = t.icon;
           const isActive = active === t.id;
           return (
@@ -41,3 +41,4 @@ export function BottomNav({ active, onChange, onAdd }: { active: ScreenId; onCha
     </div>
   );
 }
+

@@ -1,10 +1,10 @@
-import { Scale, AlertTriangle, Mail } from "lucide-react";
+import { Scale, AlertTriangle, Mail, Lock } from "lucide-react";
 import { Header, Screen } from "../Shell";
 
-const LAST_UPDATED = "July 17, 2026";
+const LAST_UPDATED = "August 11, 2026";
 const APP_NAME = "LiveSync AI";
 const COMPANY = "LiveSync Technologies";
-const CONTACT_EMAIL = "mail.com"; // TODO: replace with actual email
+const CONTACT_EMAIL = "niteshjha.uiux@yahoo.com";
 
 export function TermsConditions({ onBack }: { onBack: () => void }) {
   return (
@@ -42,7 +42,7 @@ export function TermsConditions({ onBack }: { onBack: () => void }) {
 
           <Section title="4. Nature of the Service">
             <P>
-              {APP_NAME} is a <B>personal financial management tool</B> that helps users track expenses, set budgets, plan goals, and receive AI-generated financial insights. The App is designed for informational and organizational purposes only.
+              {APP_NAME} is a <B>personal financial management tool</B> that helps users track expenses, set budgets, plan goals, and receive AI-generated financial insights. The App uses a <B>cloud + local cache architecture</B>: your data is encrypted on your device and stored securely in the cloud, with a local cache for instant loading and offline access.
             </P>
             <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 my-3">
               <div className="flex items-start gap-2">
@@ -69,14 +69,30 @@ export function TermsConditions({ onBack }: { onBack: () => void }) {
             </P>
           </Section>
 
-          <Section title="6. User Data & Content">
+          <Section title="6. End-to-End Encryption">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 mb-3">
+              <div className="flex items-start gap-2">
+                <Lock className="size-4 text-emerald-700 mt-0.5 shrink-0" />
+                <p className="text-xs text-emerald-800 leading-relaxed" style={{ fontWeight: 600 }}>
+                  The app encrypts supported sensitive fields on your device before upload. No digital service can guarantee absolute security.
+                </p>
+              </div>
+            </div>
+            <P>{APP_NAME} encrypts selected sensitive financial fields on the device using <B>AES-256-GCM</B> before transmitting them to our cloud infrastructure. By using the App, you acknowledge that:</P>
+            <P>• The app derives an encryption key from a device-local secret.</P>
+            <P>• Some structural information used by the service is not encrypted by this feature.</P>
+            <P>• If you uninstall the App or clear the App's storage, the local secret may be lost and previously encrypted records may become inaccessible on that device.</P>
+            <P>• Maintain your own export or backup for important records.</P>
+          </Section>
+
+          <Section title="7. User Data & Content">
             <P>• You retain full ownership of your financial data and content uploaded to {APP_NAME}.</P>
-            <P>• By using the App, you grant us a limited, non-exclusive license to process your data solely for the purpose of providing the service.</P>
+            <P>• By using the App, you grant us a limited, non-exclusive license to store and transmit data as needed to provide the service, including the cloud storage, authentication and AI features you choose to use.</P>
             <P>• You agree not to upload illegal, malicious, or fraudulent content.</P>
             <P>• We reserve the right to remove content that violates these Terms.</P>
           </Section>
 
-          <Section title="7. News & Third-Party Content">
+          <Section title="8. News & Third-Party Content">
             <P>
               The Financial News Hub aggregates headlines and short snippets from publicly available RSS feeds (PIB, RBI, SEBI, UN News) and licensed APIs (The Guardian). {APP_NAME}:
             </P>
@@ -85,15 +101,16 @@ export function TermsConditions({ onBack }: { onBack: () => void }) {
             <P>• Operates under fair dealing provisions (Section 52(1)(a), Indian Copyright Act, 1957) for reporting current events.</P>
           </Section>
 
-          <Section title="8. Limitation of Liability">
+          <Section title="9. Limitation of Liability">
             <P>To the maximum extent permitted by applicable law:</P>
             <P>• {APP_NAME} is provided <B>"AS IS" and "AS AVAILABLE"</B> without warranties of any kind, express or implied.</P>
             <P>• We are not liable for any indirect, incidental, special, consequential, or punitive damages, including but not limited to loss of profits, data, or financial losses arising from your use of the App.</P>
             <P>• Our total liability for any claim shall not exceed the amount you paid us (if any) in the 12 months preceding the claim.</P>
             <P>• We are not responsible for any financial decisions made based on information provided by the App or its AI features.</P>
+            <P>• We are not liable for data that becomes inaccessible due to loss of encryption keys, device failure, or actions outside our control.</P>
           </Section>
 
-          <Section title="9. Indemnification">
+          <Section title="10. Indemnification">
             <P>
               You agree to indemnify, defend, and hold harmless {COMPANY}, its officers, directors, employees, and agents from any claims, liabilities, damages, losses, or expenses (including legal fees) arising from:
             </P>
@@ -102,49 +119,53 @@ export function TermsConditions({ onBack }: { onBack: () => void }) {
             <P>• Any third-party claims relating to your use of the App.</P>
           </Section>
 
-          <Section title="10. Subscription & Payments">
+          <Section title="11. Subscription & Payments">
             <P>• {APP_NAME} may offer free and premium tiers. Premium features and pricing are displayed in the App.</P>
             <P>• Subscriptions auto-renew unless cancelled before the renewal date.</P>
             <P>• Refunds are handled as per the applicable app store's refund policy (Google Play / Apple App Store).</P>
             <P>• We reserve the right to modify pricing with 30 days' notice.</P>
           </Section>
 
-          <Section title="11. Account Termination">
+          <Section title="12. Account Termination">
             <P>• You may delete your account at any time via Security → Delete my account.</P>
             <P>• We may suspend or terminate your account for violations of these Terms, fraudulent activity, or as required by law.</P>
-            <P>• Upon termination, your data will be permanently deleted within 30 days per our retention policy.</P>
+            <P>• Upon termination, your encrypted cloud data and local cache will be permanently deleted within 30 days per our retention policy.</P>
           </Section>
 
-          <Section title="12. Governing Law & Dispute Resolution">
+          <Section title="13. Governing Law & Dispute Resolution">
             <P>• These Terms are governed by the laws of <B>India</B>.</P>
-            <P>• Any disputes shall be subject to the exclusive jurisdiction of the courts in <B>New Delhi, India</B>.</P>
+            <P>• Any disputes shall be subject to the exclusive jurisdiction of the courts in <B>Mumbai, Maharashtra, India</B>.</P>
             <P>• Before filing any claim, you agree to attempt resolution through good-faith negotiation by contacting us at <B>{CONTACT_EMAIL}</B>.</P>
           </Section>
 
-          <Section title="13. Intellectual Property">
+          <Section title="14. Intellectual Property">
             <P>
               All content, features, design, code, and trademarks of {APP_NAME} are the intellectual property of {COMPANY}. You may not copy, modify, distribute, or reverse-engineer any part of the App without our written consent.
             </P>
           </Section>
 
-          <Section title="14. Force Majeure">
+          <Section title="15. Force Majeure">
             <P>
               We shall not be liable for any failure or delay in performing our obligations due to causes beyond our reasonable control, including but not limited to natural disasters, pandemics, government actions, cyber-attacks, or infrastructure failures.
             </P>
           </Section>
 
-          <Section title="15. Severability">
+          <Section title="16. Severability">
             <P>
               If any provision of these Terms is held to be invalid or unenforceable, the remaining provisions shall continue in full force and effect. The invalid provision shall be modified to the minimum extent necessary to make it enforceable.
             </P>
           </Section>
 
-          <Section title="16. Contact">
+          <Section title="17. Contact">
             <P>For questions about these Terms:</P>
             <div className="flex items-center gap-2 mt-2 bg-muted/60 rounded-xl px-3.5 py-2.5">
               <Mail className="size-4 text-primary" />
               <span className="text-sm" style={{ fontWeight: 600 }}>{CONTACT_EMAIL}</span>
             </div>
+            <P className="mt-2">
+              {COMPANY}<br />
+              Registered Office: Mumbai, Maharashtra, India
+            </P>
           </Section>
 
           <div className="text-center text-xs text-muted-foreground pt-4 pb-2">

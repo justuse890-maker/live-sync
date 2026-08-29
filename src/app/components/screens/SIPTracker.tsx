@@ -12,7 +12,8 @@ import { Card } from "../screens/Dashboard";
 export function SIPTracker({ onBack }: { onBack: () => void }) {
   const { sips, addSip, removeSip, goals } = useStore();
   const [open, setOpen] = useState(false);
-  
+  const [submitting, setSubmitting] = useState(false);
+
   // Form State
   const [fundName, setFundName] = useState("");
   const [amount, setAmount] = useState("");
@@ -26,24 +27,30 @@ export function SIPTracker({ onBack }: { onBack: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!fundName || !amount || !startDate || !deductionDate) return;
-    await addSip({
-      fundName,
-      amount: parseFloat(amount),
-      frequency,
-      startDate,
-      deductionDate: parseInt(deductionDate),
-      goalId: goalId || undefined,
-      notes: notes || undefined,
-    });
-    // Reset Form
-    setFundName("");
-    setAmount("");
-    setStartDate("");
-    setDeductionDate("");
-    setGoalId("");
-    setNotes("");
-    setOpen(false);
+    setSubmitting(true);
+    try {
+      await addSip({
+        fundName: fundName.trim(),
+        amount: parseFloat(amount),
+        frequency,
+        startDate,
+        deductionDate: parseInt(deductionDate),
+        goalId: goalId || undefined,
+        notes: notes ? notes.trim() : undefined,
+      });
+      // Reset Form
+      setFundName("");
+      setAmount("");
+      setStartDate("");
+      setDeductionDate("");
+      setGoalId("");
+      setNotes("");
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -114,7 +121,9 @@ export function SIPTracker({ onBack }: { onBack: () => void }) {
                   <label className="text-xs text-muted-foreground font-semibold">Notes</label>
                   <Input placeholder="Folio number, platform, etc." value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button type="submit" className="w-full mt-2">Add SIP</Button>
+                <Button type="submit" disabled={submitting} className="w-full mt-2">
+                  {submitting ? "Adding SIP..." : "Add SIP"}
+                </Button>
               </form>
             </DialogContent>
           </Dialog>

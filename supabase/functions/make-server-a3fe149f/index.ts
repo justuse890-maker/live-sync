@@ -6,10 +6,14 @@ import * as kv from "./kv_store.ts";
 
 const app = new Hono();
 app.use("*", logger(console.log));
+// Keep browser access limited to known first-party origins. Add any production
+// web domain to ALLOWED_ORIGINS before deploying a new frontend domain.
+const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "https://livesync.app,https://www.livesync.app,http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1,capacitor://localhost")
+  .split(",").map((origin) => origin.trim()).filter(Boolean);
 app.use(
   "/*",
   cors({
-    origin: "*",
+    origin: (origin) => ALLOWED_ORIGINS.includes(origin) ? origin : undefined,
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
@@ -23,6 +27,8 @@ const supabase = createClient(
 );
 
 const DOC_BUCKET = "make-a3fe149f-documents";
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+const ALLOWED_DOCUMENT_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
 
 // Idempotently create the documents bucket on cold start.
 (async () => {
@@ -106,7 +112,7 @@ app.post("/make-server-a3fe149f/admin/bootstrap", async (c) => {
 });
 
 // --- Generic collection routes ---
-const collections = ["transactions", "goals", "buckets", "bucketContributions", "budgets", "subscriptions", "loans", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"] as const;
+const collections = ["transactions", "goals", "buckets", "bucketContributions", "budgets", "subscriptions", "loans", "structuredLoans", "creditCards", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"] as const;
 type Collection = (typeof collections)[number];
 const EDIT_WINDOW_MS = 5 * 60 * 1000;
 
@@ -200,6 +206,8 @@ app.post("/make-server-a3fe149f/documents/upload", async (c) => {
     const name = (form.get("name") as string) || file?.name || "Untitled";
     const expiry = (form.get("expiry") as string) || "";
     if (!file) return c.json({ error: "No file provided" }, 400);
+    if (!ALLOWED_DOCUMENT_TYPES.has(file.type)) return c.json({ error: "Unsupported file type. Upload a PDF, JPG, PNG, or WebP file." }, 400);
+    if (file.size > MAX_DOCUMENT_BYTES) return c.json({ error: "File is too large. Maximum size is 25 MB." }, 400);
 
     const id = crypto.randomUUID();
     const ext = (file.name.split(".").pop() || "bin").toLowerCase();
@@ -401,6 +409,36 @@ app.get("/make-server-a3fe149f/me/subscription", async (c) => {
     for (const key of ALL_FEATURES) planUnlocks[key] = isPaid || inTrial;
     const entitlements: Record<string, boolean> = { ...planUnlocks, ...overrides };
     return c.json({ subscription: sub, offer, plan, entitlements, inTrial, allFeatures: ALL_FEATURES });
+  } catch (e) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
+app.post("/make-server-a3fe149f/me/subscription/upgrade", async (c) => {
+  const userId = await requireUser(c);
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const { planId } = await c.req.json();
+    const plan = planId ? await kv.get(`admin:plan:${planId}`) : null;
+    const sub: any = {
+      planId: planId || "free",
+      since: new Date().toISOString(),
+      lifetime: planId === "lifetime",
+      renewsAt: planId === "pro" ? new Date(Date.now() + 30 * 86400000).toISOString() : null,
+      cancelAt: null,
+    };
+    await kv.set(`subscription:${userId}`, sub);
+
+    // Grant overrides for this plan
+    if (planId === "pro" || planId === "lifetime") {
+      const overrides: Record<string, boolean> = {};
+      for (const f of ALL_FEATURES) overrides[f] = true;
+      await kv.set(`feature-overrides:${userId}`, overrides);
+    } else if (planId === "free") {
+      await kv.del(`feature-overrides:${userId}`);
+    }
+
+    return c.json({ ok: true, subscription: sub, plan });
   } catch (e) {
     return c.json({ error: String(e) }, 500);
   }
@@ -865,16 +903,34 @@ app.post("/make-server-a3fe149f/ai/coach", async (c) => {
       return c.json({ error: "Daily AI Coach limit reached (3/3). Resets at midnight." }, 429);
     }
     
+    // Strict Sanitization: Extract ONLY anonymized transaction summaries
+    const safeContext = {
+      privacyScope: "TRANSACTIONS_ONLY (Anonymized)",
+      totalIncome: context?.totalIncome ?? 0,
+      totalExpenses: context?.totalExpenses ?? 0,
+      monthlySavings: context?.monthlySavings ?? 0,
+      categorySpend: context?.categorySpend ?? {},
+      recentTransactions: Array.isArray(context?.recentTransactions)
+        ? context.recentTransactions.slice(0, 12).map((t: any) => ({
+            category: t.category,
+            amount: t.amount,
+            type: t.type,
+            date: t.date,
+            ...(t.title ? { title: t.title } : {}),
+          }))
+        : [],
+    };
+
     // Construct Gemini chat messages
     const contents = [];
     
     // System instruction/context
-    const systemPrompt = `You are the AI Financial Advisor / Coach for LiveSync AI, a personal financial operating system built for Indian families.\n` +
+    const systemPrompt = `You are the AI Financial Advisor / Coach for LiveSync AI, an on-device personal financial OS for Indian users.\n` +
       `Your tone is professional, encouraging, practical, and family-oriented.\n` +
       `Format values in Indian Rupees (e.g. ₹10,000) or standard percentages.\n` +
-      `Avoid generic advice. Use the user's specific context below to give personalized, concrete recommendations.\n` +
-      `Redact or respect privacy when categories only mode is indicated.\n\n` +
-      `USER FINANCIAL CONTEXT:\n${JSON.stringify(context, null, 2)}`;
+      `Avoid generic advice. Use ONLY the anonymized monthly transaction context below.\n` +
+      `Never ask for or store banking credentials, passwords, or personal identities.\n\n` +
+      `USER ANONYMIZED TRANSACTION CONTEXT:\n${JSON.stringify(safeContext, null, 2)}`;
       
     contents.push({
       role: "user",
@@ -882,7 +938,7 @@ app.post("/make-server-a3fe149f/ai/coach", async (c) => {
     });
     contents.push({
       role: "model",
-      parts: [{ text: "Understood. I will act as a helpful AI Financial Advisor for LiveSync AI and use this context to answer user queries with concrete, Indian-family-focused recommendations in Rupees." }]
+      parts: [{ text: "Understood. I will act as a helpful AI Financial Advisor for LiveSync AI and use this anonymized transaction context to answer user queries with concrete, family-focused recommendations in Rupees." }]
     });
     
     // Add history
@@ -1089,6 +1145,157 @@ app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
     return c.json({ item: contrib, bucket, justCompleted: bucket.status === "completed" });
   } catch (e) {
     console.log("Add bucket contribution failed:", e);
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
+
+// ════════════════════════════════════════════════════════════════════════
+// AI-ERA FEATURES — P0/P1 priority endpoints
+// Each endpoint below is tagged with the priority it implements from the
+// "AI Era Missing Features" roadmap. Reuses queryGemini() defined above.
+// ════════════════════════════════════════════════════════════════════════
+
+// ─── [P0] AI Feature Status Check ──────────────────────────────────────
+// GET /ai/status — lets the app (and the verify script) confirm which AI
+// features are actually configured and live, without guessing.
+app.get("/make-server-a3fe149f/ai/status", async (c) => {
+  const userId = await requireUser(c);
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
+  const briefingKey = `weekly-briefing:${userId}`;
+  const lastBriefing = await kv.get(briefingKey);
+  return c.json({
+    geminiConfigured: !!apiKey,
+    features: {
+      P0_cashFlowForecast: { server: "n/a (client-side, always on)", status: "ok" },
+      P0_anomalyDetection: { server: "n/a (client-side, always on)", status: "ok" },
+      P0_weeklyBriefing: { server: "ai/weekly-briefing", status: apiKey ? "ok" : "needs GEMINI_API_KEY", lastGeneratedAt: lastBriefing?.generatedAt ?? null },
+      P1_agenticActions: { server: "buckets/:id/contributions (existing)", status: "ok" },
+      P1_negotiationScript: { server: "ai/negotiation-script", status: apiKey ? "ok" : "needs GEMINI_API_KEY" },
+    },
+  });
+});
+
+// ─── [P0] Weekly AI Briefing ────────────────────────────────────────────
+// POST /ai/weekly-briefing — computes a plain-language weekly summary from
+// an anonymized client-supplied snapshot, caches it for 7 days so repeated
+// app opens in the same week don't burn extra Gemini calls.
+app.post("/make-server-a3fe149f/ai/weekly-briefing", async (c) => {
+  const userId = await requireUser(c);
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const { snapshot, force } = await c.req.json();
+    const cacheKey = `weekly-briefing:${userId}`;
+    const cached = await kv.get(cacheKey);
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    if (!force && cached?.generatedAt && Date.now() - new Date(cached.generatedAt).getTime() < weekMs) {
+      return c.json({ text: cached.text, cached: true, generatedAt: cached.generatedAt });
+    }
+
+    const safeSnapshot = {
+      healthScore: Number(snapshot?.healthScore) || 0,
+      healthScoreDelta: Number(snapshot?.healthScoreDelta) || 0,
+      weeklySpend: Number(snapshot?.weeklySpend) || 0,
+      avgWeeklySpend: Number(snapshot?.avgWeeklySpend) || 0,
+      savingsRatePct: Number(snapshot?.savingsRatePct) || 0,
+      topCategory: String(snapshot?.topCategory || "").slice(0, 60),
+      topCategoryChangePct: Number(snapshot?.topCategoryChangePct) || 0,
+      annualLeakage: Number(snapshot?.annualLeakage) || 0,
+      forecastEndOfMonthBalance: Number(snapshot?.forecastEndOfMonthBalance) || 0,
+    };
+
+    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
+    if (!apiKey) {
+      const fallback = `Weekly briefing: health score ${safeSnapshot.healthScore}. Configure GEMINI_API_KEY on the server for AI-written summaries.`;
+      return c.json({ text: fallback, cached: false, aiUsed: false });
+    }
+
+    const prompt = `You write a short "Monday Money Briefing" push-notification-style summary for an Indian personal finance app called LiveSync AI.\n` +
+      `Rules: 2-3 sentences max. Plain, warm, non-judgmental tone. Use ₹ for amounts. No generic advice — reference ONLY the numbers given. ` +
+      `End with exactly one concrete, specific suggestion tied to the numbers below.\n\n` +
+      `DATA (anonymized, this user only):\n${JSON.stringify(safeSnapshot, null, 2)}\n\n` +
+      `Write the briefing now:`;
+
+    let text: string;
+    try {
+      text = (await queryGemini(prompt, false)).trim();
+    } catch (e) {
+      console.log("Weekly briefing Gemini call failed:", e);
+      text = `Health score ${safeSnapshot.healthScore} this week. Your ${safeSnapshot.topCategory || "spending"} moved ${safeSnapshot.topCategoryChangePct}% vs your average — worth a look.`;
+    }
+
+    const record = { text, generatedAt: new Date().toISOString(), snapshot: safeSnapshot };
+    await kv.set(cacheKey, record);
+    return c.json({ text, cached: false, generatedAt: record.generatedAt });
+  } catch (e) {
+    console.log("Weekly briefing exception:", e);
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
+// ─── [P1] AI-Drafted Negotiation Script ────────────────────────────────
+// POST /ai/negotiation-script — turns a detected overpay (high APR card,
+// above-market insurance premium, forgotten subscription) into a ready-
+// to-send message the user can copy/paste. Pure text generation — no
+// banking integration, no money movement, nothing regulator-sensitive.
+app.post("/make-server-a3fe149f/ai/negotiation-script", async (c) => {
+  const userId = await requireUser(c);
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const { kind, context } = await c.req.json();
+    const allowedKinds = ["credit_card_rate", "insurance_premium", "loan_rate", "subscription_cancel"];
+    if (!allowedKinds.includes(kind)) {
+      return c.json({ error: `kind must be one of ${allowedKinds.join(", ")}` }, 400);
+    }
+
+    // Shared daily rate limit with AI coach (same user, same cost bucket)
+    const today = new Date().toISOString().slice(0, 10);
+    const rateLimitKey = `ai-coach-limit:${userId}:${today}`;
+    const usage = (await kv.get(rateLimitKey)) || { count: 0 };
+    if (usage.count >= 3) {
+      return c.json({ error: "Daily AI limit reached (3/3). Resets at midnight." }, 429);
+    }
+
+    const safeContext = {
+      merchantOrProvider: String(context?.name || "the provider").slice(0, 80),
+      currentAmount: Number(context?.currentAmount) || 0,
+      currentRatePct: context?.currentRatePct != null ? Number(context.currentRatePct) : null,
+      marketBenchmarkPct: context?.marketBenchmarkPct != null ? Number(context.marketBenchmarkPct) : null,
+      tenureMonths: context?.tenureMonths != null ? Number(context.tenureMonths) : null,
+      hasGoodPaymentHistory: context?.hasGoodPaymentHistory !== false,
+    };
+
+    const kindInstructions: Record<string, string> = {
+      credit_card_rate: "Draft a short, polite message the user can send to their bank's customer care (chat/call script) requesting an interest rate review, citing tenure and payment history.",
+      insurance_premium: "Draft a short message requesting a premium review or asking to compare with a no-claim-bonus adjusted quote, to send to the insurer or agent.",
+      loan_rate: "Draft a short message requesting a loan interest rate reset/balance transfer discussion, citing tenure and repayment record.",
+      subscription_cancel: "Draft a short cancellation request message/email for this subscription, polite but firm, asking for confirmation of the cancellation date and no further charges.",
+    };
+
+    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
+    if (!apiKey) {
+      return c.json({ text: "AI script drafting needs GEMINI_API_KEY configured on the server.", aiUsed: false });
+    }
+
+    const prompt = `You draft short, ready-to-send negotiation/cancellation messages for an Indian personal finance app.\n` +
+      `${kindInstructions[kind]}\n` +
+      `Keep it under 80 words. Do not invent facts not given below. Do not guarantee any outcome — the message should ask, not demand.\n` +
+      `Add one line at the top: "Copy and send this:" then the message itself.\n\n` +
+      `Context: ${JSON.stringify(safeContext)}`;
+
+    let text: string;
+    try {
+      text = (await queryGemini(prompt, false)).trim();
+    } catch (e) {
+      console.log("Negotiation script Gemini call failed:", e);
+      return c.json({ error: "AI draft failed, please try again." }, 500);
+    }
+
+    await kv.set(rateLimitKey, { count: usage.count + 1, lastAt: new Date().toISOString() });
+    return c.json({ text, aiUsed: true });
+  } catch (e) {
+    console.log("Negotiation script exception:", e);
     return c.json({ error: String(e) }, 500);
   }
 });

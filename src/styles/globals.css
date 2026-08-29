@@ -20,37 +20,99 @@
 }
 
 /* ─── App shell: full-screen container ───────────────────────────────────── */
-/* Priority (highest → lowest):
-   1. 100dvh  – modern dynamic viewport unit, adjusts as keyboard/UI appears
-   2. --app-height – JS fallback set by visualViewport listener in main.tsx
-   3. 100vh   – last-resort for very old engines
-*/
-html,
-body,
-#root {
-  height: 100%;
+/*
+ * KEY INSIGHT for Capacitor/Android:
+ *   When StatusBar.setOverlaysWebView({ overlay: false }), Android reserves
+ *   the status bar AND bottom nav bar BEFORE handing the WebView its size.
+ *   This means the WebView window height is already the "safe" height.
+ *   Using height: 100% (fill what OS gave us) is correct here.
+ *   Using height: 100dvh overcounts and pushes content under system UI.
+ *
+ *   env(safe-area-inset-*) is kept as padding on the shell to handle:
+ *   - Android 15+ edge-to-edge mode (forced by OS)
+ *   - iOS notch / home indicator
+ *   - Any device where overlay=true is set
+ */
+html {
+  /* Fallback chain: --app-height (JS) → 100dvh → 100vh */
+  height: var(--app-height, 100dvh);
+  width: 100%;
   margin: 0;
   padding: 0;
+  overflow: hidden;
 }
 
-/* ─── Status-bar / notch padding for always-visible headers ─────────────── */
-/* Apply .safe-top to any fixed/sticky header that sits at the top of the
-   screen (e.g. the page header in dashboard screens). */
-.safe-top {
-  padding-top: var(--safe-top);
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
-.safe-bottom {
-  padding-bottom: var(--safe-bottom);
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
 }
 
-/* ─── Full-screen containers: adaptive height ────────────────────────────── */
-.h-dvh {
-  height: 100vh;            /* fallback */
-  height: var(--app-height, 100dvh); /* JS-set var > dvh > vh */
+/*
+ * .app-container — the outermost flex column shell.
+ *
+ * Height strategy (one of two modes, set by Capacitor):
+ *
+ *  MODE A (overlay: false — older Android, recommended):
+ *    The OS shrinks the WebView window before we see it.
+ *    height: 100% fills exactly the safe zone — no extra CSS needed.
+ *    env() values will be 0px so padding is a no-op.
+ *
+ *  MODE B (edge-to-edge forced by Android 15+ / overlay: true):
+ *    The WebView window covers the full display including system bars.
+ *    env(safe-area-inset-top/bottom) gives us the bar heights.
+ *    We apply them as padding so content stays inside the safe zone.
+ *
+ * Both modes are handled correctly by this single ruleset.
+ */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  /* Fill the measured JS height so keyboard, orientation, foldables all work */
+  height: var(--app-height, 100%);
+  width: 100%;
+  /* Push content below status bar / above gesture nav bar */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
 }
 
-.min-h-dvh {
-  min-height: 100vh;        /* fallback */
-  min-height: var(--app-height, 100dvh);
+/*
+ * .bottom-nav — anchored at bottom of flex column, never floats.
+ * flex-shrink: 0 ensures it never squishes even when content is tall.
+ */
+.bottom-nav {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  /* No extra env() here — the shell already padded the bottom inset */
 }
+
+/*
+ * .page-content — the scrollable region between header and bottom nav.
+ * 80px clears the bottom nav bar height (approx 68px bar + 12px gap).
+ */
+.page-content {
+  padding-bottom: 80px;
+  box-sizing: border-box;
+}
+
+/* ─── Safe-area helper classes ──────────────────────────────────── */
+.safe-top    { padding-top:    var(--safe-top); }
+.safe-bottom { padding-bottom: var(--safe-bottom); }
+
+/* ─── Utility dvh classes (used by a few full-screen overlays) ──────── */
+.h-dvh     { height: var(--app-height, 100dvh); }
+.min-h-dvh { min-height: var(--app-height, 100dvh); }

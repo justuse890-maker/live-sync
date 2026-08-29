@@ -1,20 +1,23 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert, Newspaper, Scale, Phone, Cloud } from "lucide-react";
+import { ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert, Scale, Phone, Cloud, ArrowRightLeft, Crown, Zap } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { inr, ScreenId } from "../types";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
 import { netWorth } from "../../lib/intelligence";
+import { APP_VERSION } from "../../data";
+import { useEntitlements } from "../../lib/useEntitlements";
 
 const wealth: { id: ScreenId; label: string; icon: any; tint: string }[] = [
-  { id: "news",      label: "Financial News Hub",          icon: Newspaper,  tint: "#0EA5E9" },
   { id: "networth",  label: "Net Worth Command Center",     icon: Wallet,     tint: "#1E40AF" },
   { id: "timeline",  label: "Financial Timeline",           icon: Calendar,   tint: "#0EA5E9" },
   { id: "leakage",   label: "Wealth Leakage Detector",      icon: Droplets,   tint: "#EF4444" },
   { id: "inflation", label: "Lifestyle Inflation Monitor",  icon: TrendingUp, tint: "#F59E0B" },
+  { id: "spending-patterns", label: "Spending Patterns",     icon: BarChart3,  tint: "#0EA5E9" },
+  { id: "money-flow", label: "Money Flow",                   icon: ArrowRightLeft, tint: "#4F46E5" },
   { id: "fire",      label: "FIRE Engine",                  icon: Flame,      tint: "#8B5CF6" },
-  { id: "simulator", label: "Decision Simulator",           icon: Sparkles,   tint: "#10B981" },
+  { id: "simulator", label: "Money Lab",                    icon: Sparkles,   tint: "#10B981" },
   { id: "investments",label: "Investment Portfolio",        icon: TrendingUp, tint: "#10B981" },
   { id: "gold",      label: "Gold Tracker",                 icon: Coins,      tint: "#F59E0B" },
   { id: "property",  label: "Real Estate (Properties)",     icon: Home,       tint: "#8B5CF6" },
@@ -33,6 +36,7 @@ const more: { id: ScreenId; label: string; icon: any; tint: string }[] = [
   { id: "sip", label: "SIP Tracker", icon: PiggyBank, tint: "#10B981" },
   { id: "insurance", label: "Insurance Policies", icon: Shield, tint: "#1E40AF" },
   { id: "creditscore", label: "Credit Score Log", icon: Award, tint: "#64748B" },
+  { id: "cards", label: "Card Desk", icon: CreditCard, tint: "#4F46E5" },
   { id: "fraud", label: "AI Fraud Alerts", icon: ShieldAlert, tint: "#EF4444" },
 ];
 
@@ -63,6 +67,7 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
   const [userInitials, setUserInitials] = useState("U");
   const [signOutConfirm, setSignOutConfirm] = useState(false);
   const { transactions, assets, liabilities } = useStore();
+  const { isLifetime, isPaid, inTrial } = useEntitlements();
 
   useEffect(() => {
     (async () => {
@@ -100,19 +105,48 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
     return Math.round((liquid / monthlyExpenses) * 10) / 10;
   }, [transactions, assets]);
 
+  const planBadgeText = isLifetime ? "Lifetime VIP" : isPaid ? "Pro Active" : inTrial ? "Pro Trial" : "Free Plan";
+
   return (
     <>
       <Header title="Profile" />
       <Screen>
         <div className="px-5 pt-2 space-y-4">
-          <div className="bg-card rounded-2xl p-5 border border-border/60 flex items-center gap-4">
-            <Avatar className="size-14">
-              <AvatarFallback className="bg-primary text-primary-foreground" style={{ fontSize: 18 }}>{userInitials}</AvatarFallback>
-            </Avatar>
-            <div className="flex-1 min-w-0">
-              <div className="font-display" style={{ fontSize: 17, fontWeight: 700 }}>{userName}</div>
-              <div className="text-xs text-muted-foreground truncate">{userEmail}</div>
+          <div className="bg-card rounded-2xl p-5 border border-border/60 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
+              <Avatar className="size-14">
+                <AvatarFallback className="bg-primary text-primary-foreground" style={{ fontSize: 18 }}>{userInitials}</AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <div className="font-display truncate" style={{ fontSize: 17, fontWeight: 700 }}>{userName}</div>
+                  {isLifetime ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/15 text-amber-600 border border-amber-500/30">
+                      <Crown className="size-3" /> VIP
+                    </span>
+                  ) : isPaid ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-primary/15 text-primary border border-primary/30">
+                      <Sparkles className="size-3" /> PRO
+                    </span>
+                  ) : inTrial ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-indigo-500/15 text-indigo-600 border border-indigo-500/30">
+                      <Zap className="size-3" /> TRIAL
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-muted text-muted-foreground">
+                      FREE
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground truncate">{userEmail}</div>
+              </div>
             </div>
+            <button
+              onClick={() => go("pricing")}
+              className="shrink-0 px-3 py-1.5 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary text-xs font-bold transition"
+            >
+              Manage
+            </button>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
@@ -131,8 +165,8 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
                 <FileText className="size-5 text-white" />
               </div>
               <div className="text-left">
-                <div className="font-bold font-display tracking-wide text-[15px]">File ITR (Autopilot)</div>
-                <div className="text-xs text-blue-100 font-medium mt-0.5">CA-level accuracy • Zero effort</div>
+                <div className="font-bold font-display tracking-wide text-[15px]">File ITR (AI-Assisted)</div>
+                <div className="text-xs text-blue-100 font-medium mt-0.5">AI-assisted • Review before filing</div>
               </div>
             </div>
             <ChevronRight className="size-5 text-white/80" />
@@ -152,7 +186,14 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
 
           <Section title="Settings">
             {settings.map((s) => (
-              <Row key={s.label} icon={<s.icon className="size-4" />} tint="#64748B" label={s.label} onClick={s.id ? () => go(s.id!) : undefined} />
+              <Row
+                key={s.label}
+                icon={<s.icon className="size-4" />}
+                tint="#64748B"
+                label={s.label}
+                badge={s.id === "pricing" ? planBadgeText : undefined}
+                onClick={s.id ? () => go(s.id!) : undefined}
+              />
             ))}
           </Section>
 
@@ -180,7 +221,7 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
             </button>
           )}
 
-          <div className="text-center text-xs text-muted-foreground py-2">LiveSync AI · v1.0.0</div>
+          <div className="text-center text-xs text-muted-foreground py-2">LiveSync AI · v{APP_VERSION}</div>
         </div>
       </Screen>
     </>
@@ -196,11 +237,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ icon, tint, label, onClick }: { icon: React.ReactNode; tint: string; label: string; onClick?: () => void }) {
+function Row({ icon, tint, label, badge, onClick }: { icon: React.ReactNode; tint: string; label: string; badge?: string; onClick?: () => void }) {
   return (
     <button onClick={onClick} className="w-full flex items-center gap-3 p-3.5 border-b border-border/60 last:border-0 hover:bg-muted/40 transition">
       <div className="size-9 rounded-lg flex items-center justify-center" style={{ background: tint + "15", color: tint }}>{icon}</div>
       <span className="flex-1 text-left text-sm" style={{ fontWeight: 500 }}>{label}</span>
+      {badge && (
+        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/10 text-primary border border-primary/20">
+          {badge}
+        </span>
+      )}
       <ChevronRight className="size-4 text-muted-foreground" />
     </button>
   );

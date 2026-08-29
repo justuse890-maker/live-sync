@@ -2,6 +2,7 @@ import { createContext, ReactNode, useContext, useEffect, useState, useCallback 
 import { api } from "./lib/api";
 import { Asset, Liability, LifeEvent } from "./lib/intelligence";
 import { saveToCache, loadFromCache, clearCache } from "./lib/localCache";
+import { getCurrentMonthKey } from "./lib/dateUtils";
 
 export type PaymentMode = "cash" | "upi" | "credit" | "debit" | "other";
 export type PaymentSplit = { mode: PaymentMode; amount: number };
@@ -16,6 +17,8 @@ export type Tx = {
   icon?: string;
   merchant?: string;
   payments?: PaymentSplit[];
+  creditCardId?: string; // ID of the credit card used (when payment mode is 'credit')
+  accountId?: string; // ID of the linked bank account (from ConnectedAccounts)
   notes?: string;
   createdAt?: string;
 };
@@ -76,15 +79,26 @@ export type StructuredLoan = {
   createdAt?: string;
 };
 
+export type CreditCardType = "credit" | "debit" | "forex" | "rupay_upi" | "prepaid" | "corporate" | "fuel" | "transit" | "other";
+export type CardNetwork = "visa" | "mastercard" | "rupay" | "amex" | "diners" | "discover" | "other";
+
 export type CreditCard = {
   id: string;
   bankName: string;
-  cardName: string; // e.g. "HDFC Regalia"
+  cardName: string; // e.g. "HDFC Regalia Gold", "Amazon Pay ICICI", "SBI Global Debit"
+  cardType?: CreditCardType; // "credit" | "debit" | "forex" | "rupay_upi" | "prepaid" | "corporate" | "fuel" | "transit"
+  network?: CardNetwork; // "visa" | "mastercard" | "rupay" | "amex" | "diners" | "discover" | "other"
   last4Digits: string;
-  creditLimit: number;
-  statementDate: number; // Day of month (1-31)
-  dueDate: number; // Days after statement date
-  color: string; // for display
+  creditLimit?: number; // Total limit for Credit/Corporate, or daily limit for Debit/Forex
+  statementDate?: number; // Day of month (1-31)
+  dueDate?: number; // Preferred payment reminder day of month (1-31)
+  expiryMonth?: string; // MM e.g. "08"
+  expiryYear?: string; // YY e.g. "29"
+  annualFee?: number;
+  isLifetimeFree?: boolean;
+  rewardType?: "cashback" | "points" | "miles" | "fuel" | "none";
+  rewardRate?: number; // Percentage or points rate e.g. 1.5, 3.3
+  color: string; // for display gradient
   notes?: string;
 };
 
@@ -227,6 +241,52 @@ export type Subscription = {
 
 const DEFAULT_CATEGORIES = ["Food", "Travel", "Shopping", "Grocery", "Medical", "Rent", "Entertainment", "Other"];
 
+/** Generic deduplication helper ensuring unique ID and functional uniqueness */
+export function dedupeList<T extends { id?: string }>(
+  items: T[],
+  functionalKeyFn?: (item: T) => string
+): T[] {
+  if (!Array.isArray(items)) return [];
+  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
+  const result: T[] = [];
+
+  for (const item of items) {
+    if (!item) continue;
+    const id = item.id;
+    if (id) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+    }
+    if (functionalKeyFn) {
+      const key = functionalKeyFn(item);
+      if (key) {
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+      }
+    }
+    result.push(item);
+  }
+  return result;
+}
+
+export const propertyKey = (p: Property) => `${(p.name || "").trim().toLowerCase()}|${p.type}|${p.purchasePrice}|${p.currentValuation}|${p.purchaseDate}`;
+export const goldKey = (g: GoldHolding) => `${(g.name || "").trim().toLowerCase()}|${g.type}|${g.weightGrams}|${g.purchasePrice}`;
+export const investmentKey = (i: Investment) => `${(i.name || "").trim().toLowerCase()}|${i.type}|${i.currentValue}|${i.investedAmount || 0}`;
+export const sipKey = (s: Sip) => `${(s.fundName || "").trim().toLowerCase()}|${s.amount}|${s.startDate}`;
+export const insuranceKey = (ins: InsurancePolicy) => `${(ins.name || "").trim().toLowerCase()}|${(ins.policyNumber || "").trim().toLowerCase()}|${ins.premiumAmount}`;
+export const loanKey = (l: Loan) => `${(l.person || "").trim().toLowerCase()}|${l.amount}|${l.repayBy}|${l.direction}`;
+export const structuredLoanKey = (sl: StructuredLoan) => `${(sl.lenderName || "").trim().toLowerCase()}|${sl.loanType}|${sl.principalAmount}|${sl.disbursementDate}`;
+export const creditCardKey = (cc: CreditCard) => `${(cc.bankName || "").trim().toLowerCase()}|${(cc.cardName || "").trim().toLowerCase()}|${cc.last4Digits}|${cc.cardType || "credit"}`;
+export const txKey = (t: Tx) => `${t.date}|${t.amount}|${(t.title || "").trim().toLowerCase()}|${t.category}|${t.type}`;
+export const goalKey = (g: Goal) => `${(g.name || "").trim().toLowerCase()}|${g.target}|${g.deadline}`;
+export const bucketKey = (bk: Bucket) => `${(bk.name || "").trim().toLowerCase()}|${bk.targetAmount}`;
+export const bucketContribKey = (bc: BucketContribution) => `${bc.bucketId}|${bc.amount}|${bc.date}`;
+export const budgetKey = (b: Budget) => `${(b.category || "").trim().toLowerCase()}|${b.month || ""}`;
+export const subscriptionKey = (s: Subscription) => `${(s.name || "").trim().toLowerCase()}|${s.cost}|${s.renewal}`;
+export const assetKey = (a: Asset) => `${(a.name || "").trim().toLowerCase()}|${a.kind || ""}|${a.value}`;
+export const liabilityKey = (l: Liability) => `${(l.name || "").trim().toLowerCase()}|${l.kind || ""}|${l.amount}`;
+
 type StoreCtx = {
   ready: boolean;
   transactions: Tx[];
@@ -290,9 +350,10 @@ type StoreCtx = {
   addGoal: (g: Omit<Goal, "id">) => Promise<void>;
   updateGoal: (g: Goal) => Promise<void>;
   removeGoal: (id: string) => Promise<void>;
-  addBucket: (b: Omit<Bucket, "id" | "status" | "savedAmount">) => Promise<void>;
+  addBucket: (b: Omit<Bucket, "id" | "status" | "savedAmount">) => Promise<Bucket | undefined>;
   updateBucket: (b: Bucket) => Promise<void>;
   archiveBucket: (id: string) => Promise<void>;
+  removeBucket: (id: string) => Promise<void>;
   addBucketContribution: (bucketId: string, amount: number, note?: string, sourceAccountId?: string) => Promise<void>;
   addBudget: (b: Omit<Budget, "id">) => Promise<void>;
   updateBudget: (b: Budget) => Promise<void>;
@@ -312,9 +373,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    return new Date().toISOString().slice(0, 7); // Default e.g. "2026-06" or "2026-07"
-  });
+  const [selectedMonth, setSelectedMonth] = useState(() => getCurrentMonthKey());
   const [loans, setLoans] = useState<Loan[]>([]);
   const [structuredLoans, setStructuredLoans] = useState<StructuredLoan[]>([]);
   const [creditCards, setCreditCards] = useState<CreditCard[]>([]);
@@ -362,25 +421,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       ]);
 
       // Apply cached data if available (instant rendering)
-      if (cachedTx) setTransactions(cachedTx.sort((a, b) => (a.date < b.date ? 1 : -1)));
-      if (cachedLoans) setLoans(cachedLoans);
-      if (cachedStructuredLoans) setStructuredLoans(cachedStructuredLoans);
-      if (cachedCreditCards) setCreditCards(cachedCreditCards);
-      if (cachedAssets) setAssets(cachedAssets);
-      if (cachedLiab) setLiabilities(cachedLiab);
-      if (cachedEvents) setLifeEvents(cachedEvents);
-      if (cachedSips) setSips(cachedSips);
-      if (cachedIns) setInsurance(cachedIns);
-      if (cachedInv) setInvestments(cachedInv);
-      if (cachedGold) setGold(cachedGold);
-      if (cachedProp) setProperties(cachedProp);
-      if (cachedCs) setCreditScore(cachedCs.sort((a, b) => b.date.localeCompare(a.date)));
-      if (cachedFraud) setFraudAlerts(cachedFraud);
-      if (cachedGoals) setGoals(cachedGoals);
-      if (cachedBuckets) setBuckets(cachedBuckets);
-      if (cachedBucketContribs) setBucketContributions(cachedBucketContribs.sort((a, b) => (a.date < b.date ? 1 : -1)));
-      if (cachedBudgets) setBudgets(cachedBudgets);
-      if (cachedSubs) setSubscriptions(cachedSubs);
+      if (cachedTx) setTransactions(dedupeList(cachedTx, txKey).sort((a, b) => (a.date < b.date ? 1 : -1)));
+      if (cachedLoans) setLoans(dedupeList(cachedLoans, loanKey));
+      if (cachedStructuredLoans) setStructuredLoans(dedupeList(cachedStructuredLoans, structuredLoanKey));
+      if (cachedCreditCards) setCreditCards(dedupeList(cachedCreditCards, creditCardKey));
+      if (cachedAssets) setAssets(dedupeList(cachedAssets, assetKey));
+      if (cachedLiab) setLiabilities(dedupeList(cachedLiab, liabilityKey));
+      if (cachedEvents) setLifeEvents(dedupeList(cachedEvents));
+      if (cachedSips) setSips(dedupeList(cachedSips, sipKey));
+      if (cachedIns) setInsurance(dedupeList(cachedIns, insuranceKey));
+      if (cachedInv) setInvestments(dedupeList(cachedInv, investmentKey));
+      if (cachedGold) setGold(dedupeList(cachedGold, goldKey));
+      if (cachedProp) setProperties(dedupeList(cachedProp, propertyKey));
+      if (cachedCs) setCreditScore(dedupeList(cachedCs).sort((a, b) => b.date.localeCompare(a.date)));
+      if (cachedFraud) setFraudAlerts(dedupeList(cachedFraud));
+      if (cachedGoals) setGoals(dedupeList(cachedGoals, goalKey));
+      if (cachedBuckets) setBuckets(dedupeList(cachedBuckets, bucketKey));
+      if (cachedBucketContribs) setBucketContributions(dedupeList(cachedBucketContribs, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1)));
+      if (cachedBudgets) setBudgets(dedupeList(cachedBudgets, budgetKey));
+      if (cachedSubs) setSubscriptions(dedupeList(cachedSubs, subscriptionKey));
       if (cachedCats && cachedCats.length > 0) {
         const custom = cachedCats.map((c) => c.name).filter(Boolean);
         setCategories(Array.from(new Set([...DEFAULT_CATEGORIES, ...custom])));
@@ -421,25 +480,45 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         api.list<StructuredLoan>("structuredLoans"),
         api.list<CreditCard>("creditCards"),
       ]);
-      setAssets(assetsRemote);
-      setLiabilities(liabRemote);
-      setLifeEvents(eventsRemote);
-      setSips(sipsRemote);
-      setInsurance(insRemote);
-      setInvestments(invRemote);
-      setGold(goldRemote);
-      setProperties(propRemote);
-      setCreditScore(csRemote.sort((a, b) => b.date.localeCompare(a.date)));
-      setFraudAlerts(fraudRemote);
-      setTransactions(txRemote.sort((a, b) => (a.date < b.date ? 1 : -1)));
-      setLoans(loansRemote);
-      setStructuredLoans(structuredLoansRemote);
-      setCreditCards(creditCardsRemote);
-      setGoals(goalsRemote);
-      setBuckets(bucketsRemote);
-      setBucketContributions(bucketContribsRemote.sort((a, b) => (a.date < b.date ? 1 : -1)));
-      setBudgets(budgetsRemote);
-      setSubscriptions(subsRemote);
+      const cleanAssets = dedupeList(assetsRemote, assetKey);
+      const cleanLiab = dedupeList(liabRemote, liabilityKey);
+      const cleanEvents = dedupeList(eventsRemote);
+      const cleanSips = dedupeList(sipsRemote, sipKey);
+      const cleanIns = dedupeList(insRemote, insuranceKey);
+      const cleanInv = dedupeList(invRemote, investmentKey);
+      const cleanGold = dedupeList(goldRemote, goldKey);
+      const cleanProp = dedupeList(propRemote, propertyKey);
+      const cleanCs = dedupeList(csRemote).sort((a, b) => b.date.localeCompare(a.date));
+      const cleanFraud = dedupeList(fraudRemote);
+      const cleanTx = dedupeList(txRemote, txKey).sort((a, b) => (a.date < b.date ? 1 : -1));
+      const cleanLoans = dedupeList(loansRemote, loanKey);
+      const cleanStructuredLoans = dedupeList(structuredLoansRemote, structuredLoanKey);
+      const cleanCreditCards = dedupeList(creditCardsRemote, creditCardKey);
+      const cleanGoals = dedupeList(goalsRemote, goalKey);
+      const cleanBuckets = dedupeList(bucketsRemote, bucketKey);
+      const cleanBucketContribs = dedupeList(bucketContribsRemote, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1));
+      const cleanBudgets = dedupeList(budgetsRemote, budgetKey);
+      const cleanSubs = dedupeList(subsRemote, subscriptionKey);
+
+      setAssets(cleanAssets);
+      setLiabilities(cleanLiab);
+      setLifeEvents(cleanEvents);
+      setSips(cleanSips);
+      setInsurance(cleanIns);
+      setInvestments(cleanInv);
+      setGold(cleanGold);
+      setProperties(cleanProp);
+      setCreditScore(cleanCs);
+      setFraudAlerts(cleanFraud);
+      setTransactions(cleanTx);
+      setLoans(cleanLoans);
+      setStructuredLoans(cleanStructuredLoans);
+      setCreditCards(cleanCreditCards);
+      setGoals(cleanGoals);
+      setBuckets(cleanBuckets);
+      setBucketContributions(cleanBucketContribs);
+      setBudgets(cleanBudgets);
+      setSubscriptions(cleanSubs);
 
       if (catsRemote.length === 0) {
         setCategories(DEFAULT_CATEGORIES);
@@ -449,27 +528,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setCategories(merged);
       }
 
-      // ── Persist to local cache for next launch ──
-      saveToCache("transactions", txRemote);
-      saveToCache("loans", loansRemote);
+      // ── Persist cleaned data to local cache ──
+      saveToCache("transactions", cleanTx);
+      saveToCache("loans", cleanLoans);
       saveToCache("categories", catsRemote);
-      saveToCache("assets", assetsRemote);
-      saveToCache("liabilities", liabRemote);
-      saveToCache("lifeEvents", eventsRemote);
-      saveToCache("sips", sipsRemote);
-      saveToCache("insurance", insRemote);
-      saveToCache("investments", invRemote);
-      saveToCache("gold", goldRemote);
-      saveToCache("properties", propRemote);
-      saveToCache("creditScore", csRemote);
-      saveToCache("fraudAlerts", fraudRemote);
-      saveToCache("goals", goalsRemote);
-      saveToCache("budgets", budgetsRemote);
-      saveToCache("subscriptions", subsRemote);
-      saveToCache("buckets", bucketsRemote);
-      saveToCache("bucketContributions", bucketContribsRemote);
-      saveToCache("structuredLoans", structuredLoansRemote);
-      saveToCache("creditCards", creditCardsRemote);
+      saveToCache("assets", cleanAssets);
+      saveToCache("liabilities", cleanLiab);
+      saveToCache("lifeEvents", cleanEvents);
+      saveToCache("sips", cleanSips);
+      saveToCache("insurance", cleanIns);
+      saveToCache("investments", cleanInv);
+      saveToCache("gold", cleanGold);
+      saveToCache("properties", cleanProp);
+      saveToCache("creditScore", cleanCs);
+      saveToCache("fraudAlerts", cleanFraud);
+      saveToCache("goals", cleanGoals);
+      saveToCache("budgets", cleanBudgets);
+      saveToCache("subscriptions", cleanSubs);
+      saveToCache("buckets", cleanBuckets);
+      saveToCache("bucketContributions", cleanBucketContribs);
+      saveToCache("structuredLoans", cleanStructuredLoans);
+      saveToCache("creditCards", cleanCreditCards);
     } catch (e) {
       console.error("Initial store load failed:", e);
     } finally {
@@ -478,6 +557,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Auto-persist every state array to local IndexedDB cache ──
+  // This ensures data is never lost even if the app is closed before a cloud sync.
+  // The `ready` guard prevents overwriting cache with empty initial state on first render.
+  useEffect(() => { if (ready) saveToCache("transactions", transactions); }, [ready, transactions]);
+  useEffect(() => { if (ready) saveToCache("loans", loans); }, [ready, loans]);
+  useEffect(() => { if (ready) saveToCache("structuredLoans", structuredLoans); }, [ready, structuredLoans]);
+  useEffect(() => { if (ready) saveToCache("creditCards", creditCards); }, [ready, creditCards]);
+  useEffect(() => { if (ready) saveToCache("assets", assets); }, [ready, assets]);
+  useEffect(() => { if (ready) saveToCache("liabilities", liabilities); }, [ready, liabilities]);
+  useEffect(() => { if (ready) saveToCache("lifeEvents", lifeEvents); }, [ready, lifeEvents]);
+  useEffect(() => { if (ready) saveToCache("sips", sips); }, [ready, sips]);
+  useEffect(() => { if (ready) saveToCache("insurance", insurance); }, [ready, insurance]);
+  useEffect(() => { if (ready) saveToCache("investments", investments); }, [ready, investments]);
+  useEffect(() => { if (ready) saveToCache("gold", gold); }, [ready, gold]);
+  useEffect(() => { if (ready) saveToCache("properties", properties); }, [ready, properties]);
+  useEffect(() => { if (ready) saveToCache("creditScore", creditScore); }, [ready, creditScore]);
+  useEffect(() => { if (ready) saveToCache("fraudAlerts", fraudAlerts); }, [ready, fraudAlerts]);
+  useEffect(() => { if (ready) saveToCache("goals", goals); }, [ready, goals]);
+  useEffect(() => { if (ready) saveToCache("budgets", budgets); }, [ready, budgets]);
+  useEffect(() => { if (ready) saveToCache("subscriptions", subscriptions); }, [ready, subscriptions]);
+  useEffect(() => { if (ready) saveToCache("buckets", buckets); }, [ready, buckets]);
+  useEffect(() => { if (ready) saveToCache("bucketContributions", bucketContributions); }, [ready, bucketContributions]);
+  useEffect(() => {
+    if (ready) {
+      const catObjects = categories.filter((c) => !DEFAULT_CATEGORIES.includes(c)).map((c) => ({ id: c, name: c }));
+      saveToCache("categories", catObjects);
+    }
+  }, [ready, categories]);
+
 
   // Clear all in-memory state when user signs out — prevents data bleed between sessions
   useEffect(() => {
@@ -544,8 +653,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addTransaction = async (t: Omit<Tx, "id">) => {
     try {
+      const targetKey = txKey(t as Tx);
+      const existing = transactions.find((x) => txKey(x) === targetKey);
+      if (existing) {
+        console.warn("Transaction already exists:", existing);
+        return;
+      }
       const created = await api.create<Tx>("transactions", t);
-      setTransactions((prev) => [created, ...prev]);
+      setTransactions((prev) => dedupeList([created, ...prev], txKey));
     } catch (e) {
       console.error("Add transaction failed:", e);
     }
@@ -554,7 +669,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateTransaction = async (t: Tx) => {
     try {
       const updated = await api.create<Tx>("transactions", t);
-      setTransactions((prev) => prev.map((x) => (x.id === t.id ? updated : x)));
+      setTransactions((prev) => dedupeList(prev.map((x) => (x.id === t.id ? updated : x)), txKey));
       return { ok: true };
     } catch (e: any) {
       console.error("Update transaction failed:", e);
@@ -564,8 +679,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const deleteTransaction = async (id: string) => {
     try {
+      const target = transactions.find((x) => x.id === id);
       await api.remove("transactions", id);
-      setTransactions((prev) => prev.filter((x) => x.id !== id));
+      setTransactions((prev) => prev.filter((x) => x.id !== id && (!target || txKey(x) !== txKey(target))));
       return { ok: true };
     } catch (e: any) {
       console.error("Delete transaction failed:", e);
@@ -575,8 +691,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addLoan = async (l: Omit<Loan, "id">) => {
     try {
+      const targetKey = loanKey(l as Loan);
+      const existing = loans.find((x) => loanKey(x) === targetKey);
+      if (existing) {
+        console.warn("Loan already exists:", existing);
+        return;
+      }
       const created = await api.create<Loan>("loans", l);
-      setLoans((prev) => [created, ...prev]);
+      setLoans((prev) => dedupeList([created, ...prev], loanKey));
     } catch (e) {
       console.error("Add loan failed:", e);
     }
@@ -595,8 +717,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const removeLoan = async (id: string) => {
     try {
+      const target = loans.find((x) => x.id === id);
       await api.remove("loans", id);
-      setLoans((prev) => prev.filter((l) => l.id !== id));
+      setLoans((prev) => prev.filter((l) => l.id !== id && (!target || loanKey(l) !== loanKey(target))));
     } catch (e) {
       console.error("Remove loan failed:", e);
     }
@@ -604,43 +727,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addStructuredLoan = async (l: Omit<StructuredLoan, "id">) => {
     try {
+      const targetKey = structuredLoanKey(l as StructuredLoan);
+      const existing = structuredLoans.find((x) => structuredLoanKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<StructuredLoan>("structuredLoans", l);
-      setStructuredLoans((prev) => [created, ...prev]);
+      setStructuredLoans((prev) => dedupeList([created, ...prev], structuredLoanKey));
     } catch (e) { console.error("Add structured loan failed:", e); }
   };
 
   const updateStructuredLoan = async (l: StructuredLoan) => {
     try {
       const updated = await api.create<StructuredLoan>("structuredLoans", l);
-      setStructuredLoans((prev) => prev.map((x) => (x.id === l.id ? updated : x)));
+      setStructuredLoans((prev) => dedupeList(prev.map((x) => (x.id === l.id ? updated : x)), structuredLoanKey));
     } catch (e) { console.error("Update structured loan failed:", e); }
   };
 
   const removeStructuredLoan = async (id: string) => {
     try {
+      const target = structuredLoans.find((x) => x.id === id);
       await api.remove("structuredLoans", id);
-      setStructuredLoans((prev) => prev.filter((x) => x.id !== id));
+      setStructuredLoans((prev) => prev.filter((x) => x.id !== id && (!target || structuredLoanKey(x) !== structuredLoanKey(target))));
     } catch (e) { console.error("Remove structured loan failed:", e); }
   };
 
   const addCreditCard = async (c: Omit<CreditCard, "id">) => {
     try {
+      const targetKey = creditCardKey(c as CreditCard);
+      const existing = creditCards.find((x) => creditCardKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<CreditCard>("creditCards", c);
-      setCreditCards((prev) => [...prev, created]);
+      setCreditCards((prev) => dedupeList([...prev, created], creditCardKey));
     } catch (e) { console.error("Add credit card failed:", e); }
   };
 
   const updateCreditCard = async (c: CreditCard) => {
     try {
       const updated = await api.create<CreditCard>("creditCards", c);
-      setCreditCards((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+      setCreditCards((prev) => dedupeList(prev.map((x) => (x.id === c.id ? updated : x)), creditCardKey));
     } catch (e) { console.error("Update credit card failed:", e); }
   };
 
   const removeCreditCard = async (id: string) => {
     try {
+      const target = creditCards.find((x) => x.id === id);
       await api.remove("creditCards", id);
-      setCreditCards((prev) => prev.filter((x) => x.id !== id));
+      setCreditCards((prev) => prev.filter((x) => x.id !== id && (!target || creditCardKey(x) !== creditCardKey(target))));
     } catch (e) { console.error("Remove credit card failed:", e); }
   };
 
@@ -649,7 +780,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!trimmed || categories.includes(trimmed)) return;
     try {
       await api.create<{ name: string }>("categories", { name: trimmed });
-      setCategories((prev) => [...prev, trimmed]);
+      setCategories((prev) => Array.from(new Set([...prev, trimmed])));
     } catch (e) {
       console.error("Add category failed:", e);
     }
@@ -671,26 +802,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const saved = await api.create<Asset>("assets", { ...a, updatedAt: new Date().toISOString() });
       setAssets((prev) => {
-        const exists = prev.find((x) => x.id === saved.id);
-        return exists ? prev.map((x) => (x.id === saved.id ? saved : x)) : [saved, ...prev];
+        const exists = prev.find((x) => x.id === saved.id || (saved.name && x.name === saved.name));
+        const updated = exists ? prev.map((x) => (x.id === saved.id || (saved.name && x.name === saved.name) ? saved : x)) : [saved, ...prev];
+        return dedupeList(updated, assetKey);
       });
     } catch (e) { console.error("Upsert asset failed:", e); }
   };
   const removeAsset = async (id: string) => {
-    try { await api.remove("assets", id); setAssets((p) => p.filter((x) => x.id !== id)); }
+    try {
+      const target = assets.find((x) => x.id === id);
+      await api.remove("assets", id);
+      setAssets((p) => p.filter((x) => x.id !== id && (!target || assetKey(x) !== assetKey(target))));
+    }
     catch (e) { console.error("Remove asset failed:", e); }
   };
   const upsertLiability = async (l: Liability | Omit<Liability, "id">) => {
     try {
       const saved = await api.create<Liability>("liabilities", { ...l, updatedAt: new Date().toISOString() });
       setLiabilities((prev) => {
-        const exists = prev.find((x) => x.id === saved.id);
-        return exists ? prev.map((x) => (x.id === saved.id ? saved : x)) : [saved, ...prev];
+        const exists = prev.find((x) => x.id === saved.id || (saved.name && x.name === saved.name));
+        const updated = exists ? prev.map((x) => (x.id === saved.id || (saved.name && x.name === saved.name) ? saved : x)) : [saved, ...prev];
+        return dedupeList(updated, liabilityKey);
       });
     } catch (e) { console.error("Upsert liability failed:", e); }
   };
   const removeLiability = async (id: string) => {
-    try { await api.remove("liabilities", id); setLiabilities((p) => p.filter((x) => x.id !== id)); }
+    try {
+      const target = liabilities.find((x) => x.id === id);
+      await api.remove("liabilities", id);
+      setLiabilities((p) => p.filter((x) => x.id !== id && (!target || liabilityKey(x) !== liabilityKey(target))));
+    }
     catch (e) { console.error("Remove liability failed:", e); }
   };
   const upsertLifeEvent = async (e: LifeEvent | Omit<LifeEvent, "id">) => {
@@ -709,16 +850,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addSip = async (s: Omit<Sip, "id">) => {
     try {
+      const targetKey = sipKey(s as Sip);
+      const existing = sips.find((x) => sipKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<Sip>("sips", s);
-      setSips((prev) => [...prev, created]);
+      setSips((prev) => dedupeList([...prev, created], sipKey));
     } catch (e) {
       console.error("Add SIP failed:", e);
     }
   };
   const removeSip = async (id: string) => {
     try {
+      const target = sips.find((x) => x.id === id);
       await api.remove("sips", id);
-      setSips((prev) => prev.filter((s) => s.id !== id));
+      setSips((prev) => prev.filter((s) => s.id !== id && (!target || sipKey(s) !== sipKey(target))));
     } catch (e) {
       console.error("Remove SIP failed:", e);
     }
@@ -726,16 +871,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addInsurance = async (i: Omit<InsurancePolicy, "id">) => {
     try {
+      const targetKey = insuranceKey(i as InsurancePolicy);
+      const existing = insurance.find((x) => insuranceKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<InsurancePolicy>("insurance", i);
-      setInsurance((prev) => [...prev, created]);
+      setInsurance((prev) => dedupeList([...prev, created], insuranceKey));
     } catch (e) {
       console.error("Add insurance failed:", e);
     }
   };
   const removeInsurance = async (id: string) => {
     try {
+      const target = insurance.find((x) => x.id === id);
       await api.remove("insurance", id);
-      setInsurance((prev) => prev.filter((i) => i.id !== id));
+      setInsurance((prev) => prev.filter((i) => i.id !== id && (!target || insuranceKey(i) !== insuranceKey(target))));
     } catch (e) {
       console.error("Remove insurance failed:", e);
     }
@@ -743,8 +892,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addInvestment = async (inv: Omit<Investment, "id">) => {
     try {
+      const targetKey = investmentKey(inv as Investment);
+      const existing = investments.find((x) => investmentKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<Investment>("investments", inv);
-      setInvestments((prev) => [...prev, created]);
+      setInvestments((prev) => dedupeList([...prev, created], investmentKey));
       await upsertAsset({
         kind: inv.type === "mutual_fund" || inv.type === "elss" ? "mf" :
               inv.type === "fixed_deposit" ? "fd" :
@@ -762,7 +914,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateInvestment = async (inv: Investment) => {
     try {
       const updated = await api.create<Investment>("investments", inv);
-      setInvestments((prev) => prev.map((x) => x.id === inv.id ? updated : x));
+      setInvestments((prev) => dedupeList(prev.map((x) => x.id === inv.id ? updated : x), investmentKey));
       const matchingAsset = assets.find((a) => a.name === inv.name);
       if (matchingAsset) {
         await upsertAsset({
@@ -778,7 +930,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const target = investments.find((x) => x.id === id);
       await api.remove("investments", id);
-      setInvestments((prev) => prev.filter((x) => x.id !== id));
+      setInvestments((prev) => prev.filter((x) => x.id !== id && (!target || investmentKey(x) !== investmentKey(target))));
       if (target) {
         const matchingAsset = assets.find((a) => a.name === target.name);
         if (matchingAsset) {
@@ -792,8 +944,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addGold = async (g: Omit<GoldHolding, "id">) => {
     try {
+      const targetKey = goldKey(g as GoldHolding);
+      const existing = gold.find((x) => goldKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<GoldHolding>("gold", g);
-      setGold((prev) => [...prev, created]);
+      setGold((prev) => dedupeList([...prev, created], goldKey));
       await upsertAsset({
         kind: "gold",
         name: g.name,
@@ -808,7 +963,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const target = gold.find((x) => x.id === id);
       await api.remove("gold", id);
-      setGold((prev) => prev.filter((x) => x.id !== id));
+      setGold((prev) => prev.filter((x) => x.id !== id && (!target || goldKey(x) !== goldKey(target))));
       if (target) {
         const matchingAsset = assets.find((a) => a.name === target.name);
         if (matchingAsset) {
@@ -822,8 +977,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addProperty = async (p: Omit<Property, "id">) => {
     try {
+      const targetKey = propertyKey(p as Property);
+      const existing = properties.find((x) => propertyKey(x) === targetKey);
+      if (existing) {
+        console.warn("Property already exists:", existing);
+        return;
+      }
       const created = await api.create<Property>("properties", p);
-      setProperties((prev) => [...prev, created]);
+      setProperties((prev) => dedupeList([...prev, created], propertyKey));
       await upsertAsset({
         kind: "property",
         name: p.name,
@@ -837,7 +998,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateProperty = async (p: Property) => {
     try {
       const updated = await api.create<Property>("properties", p);
-      setProperties((prev) => prev.map((x) => x.id === p.id ? updated : x));
+      setProperties((prev) => dedupeList(prev.map((x) => x.id === p.id ? updated : x), propertyKey));
       const matchingAsset = assets.find((a) => a.name === p.name);
       if (matchingAsset) {
         await upsertAsset({
@@ -853,7 +1014,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const target = properties.find((x) => x.id === id);
       await api.remove("properties", id);
-      setProperties((prev) => prev.filter((x) => x.id !== id));
+      setProperties((prev) => prev.filter((x) => x.id !== id && (!target || propertyKey(x) !== propertyKey(target))));
       if (target) {
         const matchingAsset = assets.find((a) => a.name === target.name);
         if (matchingAsset) {
@@ -868,7 +1029,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const addCreditScore = async (s: Omit<CreditScoreLog, "id">) => {
     try {
       const created = await api.create<CreditScoreLog>("creditScore", s);
-      setCreditScore((prev) => [created, ...prev]);
+      setCreditScore((prev) => dedupeList([created, ...prev]).sort((a, b) => b.date.localeCompare(a.date)));
     } catch (e) {
       console.error("Add credit score failed:", e);
     }
@@ -877,7 +1038,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const addFraudAlert = async (a: Omit<FraudAlert, "id">) => {
     try {
       const created = await api.create<FraudAlert>("fraudAlerts", a);
-      setFraudAlerts((prev) => [created, ...prev]);
+      setFraudAlerts((prev) => dedupeList([created, ...prev]));
     } catch (e) {
       console.error("Add fraud alert failed:", e);
     }
@@ -895,8 +1056,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addGoal = async (g: Omit<Goal, "id">) => {
     try {
+      const targetKey = goalKey(g as Goal);
+      const existing = goals.find((x) => goalKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<Goal>("goals", g);
-      setGoals((prev) => [...prev, created]);
+      setGoals((prev) => dedupeList([...prev, created], goalKey));
     } catch (e) {
       console.error("Add goal failed:", e);
     }
@@ -905,7 +1069,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateGoal = async (g: Goal) => {
     try {
       const updated = await api.create<Goal>("goals", g);
-      setGoals((prev) => prev.map((x) => x.id === g.id ? updated : x));
+      setGoals((prev) => dedupeList(prev.map((x) => x.id === g.id ? updated : x), goalKey));
     } catch (e) {
       console.error("Update goal failed:", e);
     }
@@ -913,27 +1077,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const removeGoal = async (id: string) => {
     try {
+      const target = goals.find((x) => x.id === id);
       await api.remove("goals", id);
-      setGoals((prev) => prev.filter((x) => x.id !== id));
+      setGoals((prev) => prev.filter((x) => x.id !== id && (!target || goalKey(x) !== goalKey(target))));
     } catch (e) {
       console.error("Remove goal failed:", e);
     }
   };
 
-  const addBucket = async (b: Omit<Bucket, "id" | "status" | "savedAmount">) => {
+  const addBucket = async (b: Omit<Bucket, "id" | "status" | "savedAmount">): Promise<Bucket | undefined> => {
     try {
-      const payload = { ...b, status: "active", savedAmount: 0 };
+      const trimmedName = b.name.trim();
+      const existing = buckets.find(
+        (x) =>
+          x.status === "active" &&
+          x.name.trim().toLowerCase() === trimmedName.toLowerCase() &&
+          x.targetAmount === b.targetAmount &&
+          (x.targetDate || "") === (b.targetDate || "")
+      );
+      if (existing) {
+        console.warn("Bucket with identical properties already exists:", existing);
+        return existing;
+      }
+
+      const payload = { ...b, name: trimmedName, status: "active", savedAmount: 0 };
       const created = await api.create<Bucket>("buckets", payload);
-      setBuckets((prev) => [...prev, created]);
+      setBuckets((prev) => dedupeList([...prev, created], bucketKey));
+      return created;
     } catch (e) {
       console.error("Add bucket failed:", e);
+      throw e;
     }
   };
 
   const updateBucket = async (b: Bucket) => {
     try {
       const updated = await api.create<Bucket>("buckets", b);
-      setBuckets((prev) => prev.map((x) => x.id === b.id ? updated : x));
+      setBuckets((prev) => dedupeList(prev.map((x) => x.id === b.id ? updated : x), bucketKey));
     } catch (e) {
       console.error("Update bucket failed:", e);
     }
@@ -944,9 +1124,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const target = buckets.find((b) => b.id === id);
       if (!target) return;
       const updated = await api.create<Bucket>("buckets", { ...target, status: "archived" });
-      setBuckets((prev) => prev.map((x) => x.id === id ? updated : x));
+      setBuckets((prev) => dedupeList(prev.map((x) => x.id === id ? updated : x), bucketKey));
     } catch (e) {
       console.error("Archive bucket failed:", e);
+    }
+  };
+
+  const removeBucket = async (id: string) => {
+    try {
+      const target = buckets.find((b) => b.id === id);
+      await api.remove("buckets", id);
+      setBuckets((prev) => prev.filter((x) => x.id !== id && (!target || bucketKey(x) !== bucketKey(target))));
+      setBucketContributions((prev) => prev.filter((c) => c.bucketId !== id));
+    } catch (e) {
+      console.error("Remove bucket failed:", e);
     }
   };
 
@@ -963,8 +1154,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!res.ok) throw new Error(body.error || "Contribution failed");
       
       const { item, bucket } = body;
-      setBucketContributions((prev) => [item, ...prev].sort((a, b) => (a.date < b.date ? 1 : -1)));
-      setBuckets((prev) => prev.map((x) => x.id === bucketId ? bucket : x));
+      setBucketContributions((prev) => dedupeList([item, ...prev], bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1)));
+      setBuckets((prev) => dedupeList(prev.map((x) => x.id === bucketId ? bucket : x), bucketKey));
     } catch (e) {
       console.error("Add bucket contribution failed:", e);
       throw e;
@@ -973,8 +1164,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addBudget = async (b: Omit<Budget, "id">) => {
     try {
+      const targetKey = budgetKey(b as Budget);
+      const existing = budgets.find((x) => budgetKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<Budget>("budgets", b);
-      setBudgets((prev) => [...prev, created]);
+      setBudgets((prev) => dedupeList([...prev, created], budgetKey));
     } catch (e) {
       console.error("Add budget failed:", e);
     }
@@ -983,7 +1177,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateBudget = async (b: Budget) => {
     try {
       const updated = await api.create<Budget>("budgets", b);
-      setBudgets((prev) => prev.map((x) => x.id === b.id ? updated : x));
+      setBudgets((prev) => dedupeList(prev.map((x) => x.id === b.id ? updated : x), budgetKey));
     } catch (e) {
       console.error("Update budget failed:", e);
     }
@@ -991,8 +1185,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const removeBudget = async (id: string) => {
     try {
+      const target = budgets.find((x) => x.id === id);
       await api.remove("budgets", id);
-      setBudgets((prev) => prev.filter((x) => x.id !== id));
+      setBudgets((prev) => prev.filter((x) => x.id !== id && (!target || budgetKey(x) !== budgetKey(target))));
     } catch (e) {
       console.error("Remove budget failed:", e);
     }
@@ -1000,8 +1195,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addSubscription = async (s: Omit<Subscription, "id">) => {
     try {
+      const targetKey = subscriptionKey(s as Subscription);
+      const existing = subscriptions.find((x) => subscriptionKey(x) === targetKey);
+      if (existing) return;
       const created = await api.create<Subscription>("subscriptions", s);
-      setSubscriptions((prev) => [...prev, created]);
+      setSubscriptions((prev) => dedupeList([...prev, created], subscriptionKey));
     } catch (e) {
       console.error("Add subscription failed:", e);
     }
@@ -1009,8 +1207,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const removeSubscription = async (id: string) => {
     try {
+      const target = subscriptions.find((x) => x.id === id);
       await api.remove("subscriptions", id);
-      setSubscriptions((prev) => prev.filter((x) => x.id !== id));
+      setSubscriptions((prev) => prev.filter((x) => x.id !== id && (!target || subscriptionKey(x) !== subscriptionKey(target))));
     } catch (e) {
       console.error("Remove subscription failed:", e);
     }
@@ -1053,7 +1252,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       upsertAsset, removeAsset, upsertLiability, removeLiability, upsertLifeEvent, removeLifeEvent,
       addSip, removeSip, addInsurance, removeInsurance, addInvestment, updateInvestment, removeInvestment,
       addGold, removeGold, addProperty, updateProperty, removeProperty, addCreditScore, addFraudAlert, resolveFraudAlert,
-      addGoal, updateGoal, removeGoal, addBucket, updateBucket, archiveBucket, addBucketContribution, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription, refresh
+      addGoal, updateGoal, removeGoal, addBucket, updateBucket, archiveBucket, removeBucket, addBucketContribution, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription, refresh
     }}>
       {children}
     </Ctx.Provider>

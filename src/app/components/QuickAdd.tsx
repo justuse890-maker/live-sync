@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { X, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2, Plus, Banknote, Smartphone, CreditCard, Wallet, MoreHorizontal, Trash2, Pencil, Mic, Camera } from "lucide-react";
+import { useMemo, useState, useEffect } from "react";
+import { X, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2, Plus, Banknote, Smartphone, CreditCard, Wallet, MoreHorizontal, Trash2, Pencil, Mic, Camera, Info } from "lucide-react";
 import { PaymentMode, PaymentSplit, useStore } from "../store";
 import { CaptureVoiceScan } from "./CaptureVoiceScan";
 import { hapticSuccess, hapticLight } from "../lib/native";
@@ -14,7 +14,7 @@ const paymentMeta: Record<PaymentMode, { label: string; icon: any; tint: string 
 const paymentOrder: PaymentMode[] = ["cash", "upi", "credit", "debit", "other"];
 
 export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { addTransaction, categories, addCategory } = useStore();
+  const { addTransaction, categories, addCategory, creditCards } = useStore();
   const [tab, setTab] = useState<"manual" | "voice" | "scan">("manual");
   const [type, setType] = useState<"expense" | "income" | "transfer">("expense");
   const [amount, setAmount] = useState("");
@@ -22,6 +22,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
   const [merchant, setMerchant] = useState("");
   const [notes, setNotes] = useState("");
   const [singleMode, setSingleMode] = useState<PaymentMode>("upi");
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [splitOn, setSplitOn] = useState(false);
   const [splits, setSplits] = useState<PaymentSplit[]>([{ mode: "cash", amount: 0 }, { mode: "upi", amount: 0 }]);
   const [newCat, setNewCat] = useState("");
@@ -32,35 +33,56 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
   const splitTotal = useMemo(() => splits.reduce((s, p) => s + (Number(p.amount) || 0), 0), [splits]);
   const splitOk = !splitOn || (total > 0 && Math.abs(splitTotal - total) < 0.01);
 
+  // Auto-select first card when switching to Credit mode (if none selected)
+  const handleSetSingleMode = (m: PaymentMode) => {
+    setSingleMode(m);
+    if (m === "credit" && creditCards.length > 0 && !selectedCardId) {
+      setSelectedCardId(creditCards[0].id);
+    }
+    if (m !== "credit") setSelectedCardId(null);
+  };
+
+  // Auto-select first card when creditCards list loads and credit mode is active
+  useEffect(() => {
+    if (singleMode === "credit" && creditCards.length > 0 && !selectedCardId) {
+      setSelectedCardId(creditCards[0].id);
+    }
+  }, [creditCards, singleMode]);
+
   const reset = () => {
     setAmount(""); setMerchant(""); setNotes("");
     setSplitOn(false); setSplits([{ mode: "cash", amount: 0 }, { mode: "upi", amount: 0 }]);
     setNewCat(""); setShowNewCat(false);
+    setSelectedCardId(null);
   };
 
   const save = async () => {
-    if (!amount || !splitOk) return;
+    if (!amount || !splitOk || saving) return;
     setSaving(true);
-    const isIncome = type === "income";
-    const payments: PaymentSplit[] = isIncome
-      ? []
-      : splitOn
-        ? splits.filter((s) => s.amount > 0)
-        : [{ mode: singleMode, amount: total }];
-    await addTransaction({
-      title: merchant || (isIncome ? "Income" : cat),
-      category: isIncome ? "Income" : cat,
-      amount: isIncome ? total : -total,
-      type: isIncome ? "income" : "expense",
-      date: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
-      merchant: merchant || undefined,
-      payments: payments.length ? payments : undefined,
-      notes: notes || undefined,
-    });
-    hapticSuccess();
-    setSaving(false);
-    reset();
-    onClose();
+    try {
+      const isIncome = type === "income";
+      const payments: PaymentSplit[] = isIncome
+        ? []
+        : splitOn
+          ? splits.filter((s) => s.amount > 0)
+          : [{ mode: singleMode, amount: total }];
+      await addTransaction({
+        title: (merchant || (isIncome ? "Income" : cat)).trim(),
+        category: isIncome ? "Income" : cat,
+        amount: isIncome ? total : -total,
+        type: isIncome ? "income" : "expense",
+        date: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+        merchant: merchant ? merchant.trim() : undefined,
+        payments: payments.length ? payments : undefined,
+        creditCardId: (!isIncome && !splitOn && singleMode === "credit" && selectedCardId) ? selectedCardId : undefined,
+        notes: notes ? notes.trim() : undefined,
+      });
+      hapticSuccess();
+      reset();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleAddCategory = async () => {
@@ -194,25 +216,81 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
                 }
               >
                 {!splitOn ? (
-                  <div className="grid grid-cols-5 gap-2">
-                    {paymentOrder.map((m) => {
-                      const meta = paymentMeta[m];
-                      const active = singleMode === m;
-                      return (
-                        <button
-                          key={m}
-                          onClick={() => setSingleMode(m)}
-                          className={`flex flex-col items-center gap-1 py-2.5 rounded-xl text-[10px] transition border ${
-                            active ? "border-primary bg-primary/5 text-primary" : "border-transparent bg-muted text-muted-foreground"
-                          }`}
-                          style={{ fontWeight: 600 }}
-                        >
-                          <meta.icon className="size-4" style={{ color: active ? meta.tint : undefined }} />
-                          {meta.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <>
+                    {/* Payment mode buttons */}
+                    <div className="grid grid-cols-5 gap-2">
+                      {paymentOrder.map((m) => {
+                        const meta = paymentMeta[m];
+                        const active = singleMode === m;
+                        return (
+                          <button
+                            key={m}
+                            onClick={() => handleSetSingleMode(m)}
+                            className={`flex flex-col items-center gap-1 py-2.5 rounded-xl text-[10px] transition border ${
+                              active ? "border-primary bg-primary/5 text-primary" : "border-transparent bg-muted text-muted-foreground"
+                            }`}
+                            style={{ fontWeight: 600 }}
+                          >
+                            <meta.icon className="size-4" style={{ color: active ? meta.tint : undefined }} />
+                            {meta.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Credit card selector — appears when Credit mode is active */}
+                    {singleMode === "credit" && (
+                      <div className="mt-3">
+                        {creditCards.length === 0 ? (
+                          /* ── No cards saved: guide user to Profile ── */
+                          <div className="flex items-start gap-3 p-3.5 rounded-xl bg-violet-50 border border-violet-100">
+                            <Info className="size-4 text-violet-500 shrink-0 mt-0.5" />
+                            <div>
+                              <div className="text-xs text-violet-800" style={{ fontWeight: 600 }}>No credit cards added yet</div>
+                              <div className="text-[11px] text-violet-600 mt-0.5 leading-relaxed">
+                                Go to <span style={{ fontWeight: 700 }}>Profile → Loans & Borrowings → Cards</span> to add your cards once — then select them here whenever you pay by credit.
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          /* ── Card selector ── */
+                          <>
+                            <div className="text-[10px] text-muted-foreground mb-2" style={{ fontWeight: 600 }}>WHICH CARD DID YOU USE?</div>
+                            <div className="flex flex-col gap-2">
+                              {creditCards.map((card) => {
+                                const isSelected = selectedCardId === card.id;
+                                return (
+                                  <button
+                                    key={card.id}
+                                    onClick={() => setSelectedCardId(isSelected ? null : card.id)}
+                                    className={`flex items-center gap-3 p-3 rounded-xl border transition ${
+                                      isSelected
+                                        ? "border-violet-400 bg-violet-50"
+                                        : "border-border bg-muted/40 hover:bg-muted/60"
+                                    }`}
+                                  >
+                                    <div
+                                      className="size-9 rounded-lg flex items-center justify-center shrink-0"
+                                      style={{ background: card.color + "20" }}
+                                    >
+                                      <CreditCard className="size-4" style={{ color: card.color }} />
+                                    </div>
+                                    <div className="flex-1 text-left min-w-0">
+                                      <div className="text-sm truncate" style={{ fontWeight: 600 }}>{card.cardName}</div>
+                                      <div className="text-[11px] text-muted-foreground">{card.bankName} &bull;&bull;&bull;&bull; {card.last4Digits}</div>
+                                    </div>
+                                    <div className={`size-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${isSelected ? "border-violet-500 bg-violet-500" : "border-border"}`}>
+                                      {isSelected && <div className="size-2 rounded-full bg-white" />}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <SplitEditor splits={splits} setSplits={setSplits} total={total} splitTotal={splitTotal} />
                 )}

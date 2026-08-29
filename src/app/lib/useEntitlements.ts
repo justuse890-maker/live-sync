@@ -9,9 +9,13 @@ export type SubscriptionInfo = {
   allFeatures: string[];
   inTrial: boolean;
   trialEndsAt: string | null;
+  isPaid: boolean;
+  isLifetime: boolean;
+  isPro: boolean;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  upgrade: (planId: "free" | "pro" | "lifetime") => Promise<void>;
 };
 
 const Ctx = createContext<SubscriptionInfo | null>(null);
@@ -45,6 +49,16 @@ export function EntitlementsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const upgrade = useCallback(async (planId: "free" | "pro" | "lifetime") => {
+    try {
+      setLoading(true);
+      await api.upgradeSubscription(planId);
+      await refresh();
+    } finally {
+      setLoading(false);
+    }
+  }, [refresh]);
+
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
     const onFocus = () => refresh();
@@ -52,7 +66,16 @@ export function EntitlementsProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  return createElement(Ctx.Provider, { value: { plan, subscription, entitlements, allFeatures, inTrial, trialEndsAt, loading, error, refresh } }, children);
+  const planId = subscription?.planId || "free";
+  const isLifetime = !!subscription?.lifetime || planId === "lifetime";
+  const isPaid = isLifetime || planId === "pro";
+  const isPro = isPaid || inTrial;
+
+  return createElement(
+    Ctx.Provider,
+    { value: { plan, subscription, entitlements, allFeatures, inTrial, trialEndsAt, isPaid, isLifetime, isPro, loading, error, refresh, upgrade } },
+    children
+  );
 }
 
 export function useEntitlements(): SubscriptionInfo {
@@ -62,7 +85,11 @@ export function useEntitlements(): SubscriptionInfo {
 }
 
 export function useHasFeature(feature: string): boolean {
-  const { entitlements, inTrial } = useEntitlements();
+  const { entitlements, inTrial, subscription, isPaid, loading } = useEntitlements();
+  // Never show an upgrade prompt before the account status has been checked.
+  if (loading) return true;
+  // A paid account has access to every Pro feature.
+  if (isPaid || subscription?.planId === "pro" || subscription?.planId === "lifetime" || subscription?.lifetime) return true;
   if (entitlements[feature] === true) return true;
   if (entitlements[feature] === false) return false;
   return inTrial;

@@ -22,6 +22,7 @@ const invTypes = {
 export function Investments({ onBack }: { onBack: () => void }) {
   const { investments, addInvestment, removeInvestment } = useStore();
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form State
   const [name, setName] = useState("");
@@ -38,23 +39,29 @@ export function Investments({ onBack }: { onBack: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !investedAmount || !currentValue || !purchaseDate) return;
-    await addInvestment({
-      name,
-      type,
-      investedAmount: parseFloat(investedAmount),
-      currentValue: parseFloat(currentValue),
-      purchaseDate,
-      notes: notes || undefined,
-    });
-    // Reset Form
-    setName("");
-    setType("mutual_fund");
-    setInvestedAmount("");
-    setCurrentValue("");
-    setPurchaseDate("");
-    setNotes("");
-    setOpen(false);
+    setSubmitting(true);
+    try {
+      await addInvestment({
+        name: name.trim(),
+        type,
+        investedAmount: parseFloat(investedAmount),
+        currentValue: parseFloat(currentValue),
+        purchaseDate,
+        notes: notes ? notes.trim() : undefined,
+      });
+      // Reset Form
+      setName("");
+      setType("mutual_fund");
+      setInvestedAmount("");
+      setCurrentValue("");
+      setPurchaseDate("");
+      setNotes("");
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -117,7 +124,9 @@ export function Investments({ onBack }: { onBack: () => void }) {
                   <label className="text-xs text-muted-foreground font-semibold">Notes</label>
                   <Input placeholder="Folio #, account #, remarks" value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button type="submit" className="w-full mt-2">Add to Portfolio</Button>
+                <Button type="submit" disabled={submitting} className="w-full mt-2">
+                  {submitting ? "Adding to Portfolio..." : "Add to Portfolio"}
+                </Button>
               </form>
             </DialogContent>
           </Dialog>
@@ -134,9 +143,12 @@ export function Investments({ onBack }: { onBack: () => void }) {
                   {inr(totalCurrent)}
                 </div>
               </div>
-              <div className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-white/15 ${absoluteReturns >= 0 ? "text-emerald-300" : "text-rose-300"}`} style={{ fontWeight: 600 }}>
-                <ArrowUpRight className="size-3.5" />
-                {returnsPct.toFixed(1)}%
+              <div className={`flex flex-col items-end gap-0.5`}>
+                <div className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-white/15 ${absoluteReturns >= 0 ? "text-emerald-300" : "text-rose-300"}`} style={{ fontWeight: 600 }}>
+                  {absoluteReturns >= 0 ? <ArrowUpRight className="size-3.5" /> : <ArrowUpRight className="size-3.5 rotate-180" />}
+                  {absoluteReturns >= 0 ? "+" : ""}{returnsPct.toFixed(1)}%
+                </div>
+                <div className="text-[9px] text-white/50 tracking-wide">Absolute return</div>
               </div>
             </div>
             <div className="mt-5 pt-4 border-t border-white/15 grid grid-cols-2 gap-4">
@@ -206,6 +218,7 @@ export function Investments({ onBack }: { onBack: () => void }) {
                         <div className={`text-[10px] font-semibold flex items-center justify-end gap-0.5 mt-0.5 ${returns >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                           {returns >= 0 ? "+" : ""}{profitPct.toFixed(1)}%
                         </div>
+                        <div className="text-[9px] text-muted-foreground mt-0.5">Absolute return</div>
                         <button onClick={() => removeInvestment(inv.id)} className="text-rose-500 hover:text-rose-700 mt-2 p-1">
                           <Trash2 className="size-4" />
                         </button>

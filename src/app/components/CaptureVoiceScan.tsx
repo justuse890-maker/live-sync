@@ -19,22 +19,25 @@ export function CaptureVoiceScan({ mode, onClose }: { mode: Mode; onClose: () =>
   const [savingAll, setSavingAll] = useState(false);
 
   const commitAll = async () => {
-    if (drafts.length === 0) return;
+    if (drafts.length === 0 || savingAll) return;
     setSavingAll(true);
-    for (const d of drafts) {
-      await addTransaction({
-        title: d.merchant || d.category || (d.type === "income" ? "Income" : "Expense"),
-        category: d.category ?? (d.type === "income" ? "Income" : "Other"),
-        amount: d.type === "income" ? d.amount : -d.amount,
-        type: d.type,
-        date: d.date ? new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" })
-                     : new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
-        merchant: d.merchant,
-        notes: transcript || undefined,
-      });
+    try {
+      for (const d of drafts) {
+        await addTransaction({
+          title: (d.merchant || d.category || (d.type === "income" ? "Income" : "Expense")).trim(),
+          category: d.category ?? (d.type === "income" ? "Income" : "Other"),
+          amount: d.type === "income" ? d.amount : -d.amount,
+          type: d.type,
+          date: d.date ? new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" })
+                       : new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+          merchant: d.merchant ? d.merchant.trim() : undefined,
+          notes: transcript ? transcript.trim() : undefined,
+        });
+      }
+      onClose();
+    } finally {
+      setSavingAll(false);
     }
-    setSavingAll(false);
-    onClose();
   };
 
   return (

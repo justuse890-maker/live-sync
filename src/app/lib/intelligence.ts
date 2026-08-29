@@ -2,7 +2,8 @@
 // wealth module. Keeping it framework-free makes it trivial to test and to
 // swap with a server-side implementation later.
 
-import { Tx } from "../store";
+import type { Tx } from "../store";
+import { getMonthKey } from "./dateUtils";
 
 export type Asset = {
   id: string;
@@ -57,9 +58,9 @@ export function monthlyFlow(transactions: Tx[], monthsBack = 0) {
   const now = new Date();
   const target = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
   const key = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}`;
-  const inMonth = transactions.filter((t) => t.date.startsWith(key));
-  const income = inMonth.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const expense = -inMonth.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const inMonth = transactions.filter((t) => getMonthKey(t.date) === key);
+  const income = inMonth.filter((t) => t.type === "income").reduce((s, t) => s + Math.abs(t.amount), 0);
+  const expense = inMonth.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
   return { income, expense, savings: income - expense, monthKey: key };
 }
 
@@ -71,7 +72,7 @@ export function monthlyFlow(transactions: Tx[], monthsBack = 0) {
 export type Leak = {
   id: string;
   title: string;
-  category: "Subscriptions" | "Dining" | "Banking" | "Travel" | "Idle Cash" | "Debt";
+  category: "Subscriptions" | "Dining" | "Banking" | "Travel" | "Idle Cash" | "Debt" | "Micro Leaks" | "Frequency" | "Recurring";
   annual: number;
   tip: string;
   severity: "low" | "medium" | "high";
@@ -197,8 +198,131 @@ export function detectLeaks(
     });
   }
 
+  // 7. Micro-spend accumulator: small purchases can be easy to miss in a
+  // statement, so only surface a category once it has both volume and scale.
+  const currentMonth = transactions.reduce((latest, t) => {
+    const key = getMonthKey(t.date);
+    return key > latest ? key : latest;
+  }, "");
+  const currentExpenses = transactions.filter((t) => t.type === "expense" && getMonthKey(t.date) === currentMonth);
+  const microByCategory: Record<string, { total: number; count: number }> = {};
+  for (const t of currentExpenses) {
+    const amount = Math.abs(t.amount);
+    if (amount >= 500) continue;
+    const category = t.category || "Other";
+    const bucket = microByCategory[category] ||= { total: 0, count: 0 };
+    bucket.total += amount;
+    bucket.count += 1;
+  }
+  for (const [category, data] of Object.entries(microByCategory)) {
+    if (data.total < 3000 || data.count < 6) continue;
+    leaks.push({
+      id: `micro-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      title: `${data.count} small ${category.toLowerCase()} spends`,
+      category: "Micro Leaks",
+      annual: data.total * 12,
+      tip: `${data.count} purchases below ₹500 added up to ₹${Math.round(data.total).toLocaleString("en-IN")} this month. Set a monthly cap before they compound.`,
+      severity: data.total >= 6000 ? "high" : "medium",
+    });
+  }
+
+  // 8. Frequency creep: compare a merchant's transaction count with the
+  // previous calendar month. Require a meaningful baseline to avoid noise.
+  if (currentMonth) {
+    const previousMonth = shiftMonthKey(currentMonth, -1);
+    const merchantCount = (month: string) => {
+      const counts: Record<string, number> = {};
+      for (const t of transactions) {
+        if (t.type !== "expense" || getMonthKey(t.date) !== month) continue;
+        const name = (t.merchant || t.title || "Other").trim();
+        counts[name] = (counts[name] || 0) + 1;
+      }
+      return counts;
+    };
+    const currentCounts = merchantCount(currentMonth);
+    const priorCounts = merchantCount(previousMonth);
+    for (const [merchant, count] of Object.entries(currentCounts)) {
+      const before = priorCounts[merchant] || 0;
+      if (before < 3 || count < before * 1.3) continue;
+      const currentSpend = currentExpenses
+        .filter((t) => (t.merchant || t.title || "Other").trim() === merchant)
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      leaks.push({
+        id: `frequency-${merchant.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        title: `${merchant} purchase frequency rose`,
+        category: "Frequency",
+        annual: currentSpend * 12,
+        tip: `Orders rose from ${before} to ${count} this month (${Math.round(((count - before) / before) * 100)}%). Plan a weekly limit to bring the habit back in range.`,
+        severity: count >= before * 1.75 ? "high" : "medium",
+      });
+    }
+  }
+
+  // 9. Forgotten recurring charges: detect equal-value charges at roughly
+  // monthly intervals that are not already tracked in Subscription Shield.
+  const trackedNames = subscriptions.map((s: any) => (s.name || "").toLowerCase());
+  const recurring: Record<string, Tx[]> = {};
+  for (const t of transactions.filter((t) => t.type === "expense")) {
+    const name = (t.merchant || t.title || "Other").trim();
+    if (trackedNames.some((tracked) => tracked && name.toLowerCase().includes(tracked))) continue;
+    const key = `${name.toLowerCase()}::${Math.round(Math.abs(t.amount))}`;
+    (recurring[key] ||= []).push(t);
+  }
+  for (const [key, charges] of Object.entries(recurring)) {
+    if (charges.length < 2) continue;
+    const sorted = [...charges].sort((a, b) => a.date.localeCompare(b.date));
+    const gaps = sorted.slice(1).map((t, index) => (new Date(t.date).getTime() - new Date(sorted[index].date).getTime()) / 86400000);
+    const monthly = gaps.every((gap) => gap >= 25 && gap <= 35);
+    if (!monthly) continue;
+    const amount = Math.abs(sorted[0].amount);
+    const name = sorted[0].merchant || sorted[0].title || "Recurring charge";
+    leaks.push({
+      id: `recurring-${key.replace(/[^a-z0-9]+/g, "-")}`,
+      title: `${name} appears to recur monthly`,
+      category: "Recurring",
+      annual: amount * 12,
+      tip: `₹${Math.round(amount).toLocaleString("en-IN")} has appeared ${charges.length} times at a monthly interval. Track it as a subscription or cancel it if it is no longer useful.`,
+      severity: amount >= 1000 ? "medium" : "low",
+    });
+  }
+
   const totalAnnual = leaks.reduce((s, l) => s + l.annual, 0);
   return { leaks: leaks.sort((a, b) => b.annual - a.annual), totalAnnual };
+}
+
+// ─── Phase 4: Savings flow ───────────────────────────────────────────────
+const FLOW_NEEDS = new Set(["rent", "grocery", "groceries", "medical", "health", "utilities", "bills", "insurance", "education"]);
+const FLOW_SAVINGS = new Set(["savings", "investment", "sip", "gold", "mutual fund", "stocks", "ppf", "fd", "goal"]);
+
+export function needsWantsSavings(transactions: Tx[], monthKey: string) {
+  const totals = { needs: 0, wants: 0, savings: 0, emis: 0 };
+  for (const t of transactions) {
+    if (t.type !== "expense" || getMonthKey(t.date) !== monthKey) continue;
+    const amount = Math.abs(t.amount);
+    const category = (t.category || "").toLowerCase();
+    const label = `${t.title || ""} ${t.merchant || ""} ${category}`.toLowerCase();
+    if (/\bemi\b|loan repayment|loan emi/.test(label)) totals.emis += amount;
+    else if (FLOW_SAVINGS.has(category)) totals.savings += amount;
+    else if (FLOW_NEEDS.has(category)) totals.needs += amount;
+    else totals.wants += amount;
+  }
+  return totals;
+}
+
+export function savingsFlow(transactions: Tx[], monthKey: string) {
+  const income = transactions.filter((t) => t.type === "income" && getMonthKey(t.date) === monthKey).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const split = needsWantsSavings(transactions, monthKey);
+  const spending = split.needs + split.wants + split.savings + split.emis;
+  const leftForFuture = income - spending;
+  const savingsRate = income > 0 ? (leftForFuture / income) * 100 : 0;
+  return { income, ...split, spending, leftForFuture, savingsRate };
+}
+
+export function savingsProjection(transactions: Tx[], months = 6) {
+  const keys = Array.from(new Set(transactions.map((t) => getMonthKey(t.date)))).sort().slice(-months);
+  const monthly = keys.map((key) => ({ monthKey: key, ...savingsFlow(transactions, key) }));
+  const averageMonthly = monthly.length ? monthly.reduce((sum, item) => sum + item.leftForFuture, 0) / monthly.length : 0;
+  return { monthly, averageMonthly, annual: averageMonthly * 12 };
 }
 
 // ─── Lifestyle Inflation ──────────────────────────────────────────────────
@@ -325,3 +449,491 @@ export function buildTimeline({ transactions, subscriptions, goals, loans, bills
 
   return events.sort((a, b) => (a.date < b.date ? 1 : -1));
 }
+
+// ─── Phase 1: Spending Breakdown ──────────────────────────────────────────
+
+export type CategorySpend = {
+  category: string;
+  total: number;
+  count: number;
+  pct: number;
+  avgPerTx: number;
+};
+
+/** Returns spending grouped by category with % share for a given month. */
+export function spendingByCategory(transactions: Tx[], monthKey: string): CategorySpend[] {
+  const expenses = transactions.filter(
+    (t) => t.type === "expense" && getMonthKey(t.date) === monthKey,
+  );
+  const map: Record<string, { total: number; count: number }> = {};
+  for (const t of expenses) {
+    const cat = t.category || "Other";
+    if (!map[cat]) map[cat] = { total: 0, count: 0 };
+    map[cat].total += Math.abs(t.amount);
+    map[cat].count += 1;
+  }
+  const grandTotal = Object.values(map).reduce((s, v) => s + v.total, 0) || 1;
+  return Object.entries(map)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([category, data]) => ({
+      category,
+      total: data.total,
+      count: data.count,
+      pct: (data.total / grandTotal) * 100,
+      avgPerTx: data.count > 0 ? data.total / data.count : 0,
+    }));
+}
+
+export type MerchantSpend = {
+  merchant: string;
+  total: number;
+  count: number;
+  pct: number;
+  category: string;
+  avgPerTx: number;
+};
+
+/** Returns spending grouped by normalized merchant name with frequency & total. */
+export function spendingByMerchant(transactions: Tx[], monthKey: string): MerchantSpend[] {
+  const expenses = transactions.filter(
+    (t) => t.type === "expense" && getMonthKey(t.date) === monthKey,
+  );
+  const map: Record<string, { total: number; count: number; category: string }> = {};
+  for (const t of expenses) {
+    const name = (t.merchant || t.title || "Other").trim();
+    if (!map[name]) map[name] = { total: 0, count: 0, category: t.category || "Other" };
+    map[name].total += Math.abs(t.amount);
+    map[name].count += 1;
+  }
+  const grandTotal = Object.values(map).reduce((s, v) => s + v.total, 0) || 1;
+  return Object.entries(map)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([merchant, data]) => ({
+      merchant,
+      total: data.total,
+      count: data.count,
+      pct: (data.total / grandTotal) * 100,
+      category: data.category,
+      avgPerTx: data.count > 0 ? data.total / data.count : 0,
+    }));
+}
+
+export type TopSpend = {
+  id: string;
+  title: string;
+  merchant: string;
+  amount: number;
+  category: string;
+  date: string;
+  pctOfTotal: number;
+};
+
+/** Returns top N spends by absolute amount in a month. */
+export function topSpends(transactions: Tx[], monthKey: string, n = 10): TopSpend[] {
+  const expenses = transactions
+    .filter((t) => t.type === "expense" && getMonthKey(t.date) === monthKey)
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+  const totalSpend = expenses.reduce((s, t) => s + Math.abs(t.amount), 0) || 1;
+  return expenses.slice(0, n).map((t) => ({
+    id: t.id,
+    title: t.title,
+    merchant: t.merchant || t.title || "Unknown",
+    amount: Math.abs(t.amount),
+    category: t.category || "Other",
+    date: t.date,
+    pctOfTotal: (Math.abs(t.amount) / totalSpend) * 100,
+  }));
+}
+
+export type AccountSummary = {
+  accountId: string;
+  income: number;
+  expense: number;
+  txCount: number;
+  topCategory: string;
+};
+
+/** Returns summary stats for a specific account's linked transactions. */
+export function getAccountSummary(transactions: Tx[], accountId: string, monthKey?: string): AccountSummary {
+  let filtered = transactions.filter((t) => t.accountId === accountId);
+  if (monthKey) filtered = filtered.filter((t) => getMonthKey(t.date) === monthKey);
+  const income = filtered.filter((t) => t.type === "income").reduce((s, t) => s + Math.abs(t.amount), 0);
+  const expense = filtered.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
+  // Find top category
+  const catMap: Record<string, number> = {};
+  for (const t of filtered.filter((t) => t.type === "expense")) {
+    const cat = t.category || "Other";
+    catMap[cat] = (catMap[cat] || 0) + Math.abs(t.amount);
+  }
+  const topCategory = Object.entries(catMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
+  return { accountId, income, expense, txCount: filtered.length, topCategory };
+}
+
+// ─── Phase 2: Spending Patterns & Comparisons ────────────────────────────
+
+export type CategoryComparison = {
+  category: string;
+  currentAmount: number;
+  previousAmount: number;
+  change: number;      // absolute change
+  changePct: number;   // percentage change
+  direction: "up" | "down" | "same";
+};
+
+/** Compares category-wise spending between two months. */
+export function monthComparison(transactions: Tx[], monthA: string, monthB: string): CategoryComparison[] {
+  const catA = spendingByCategory(transactions, monthA);
+  const catB = spendingByCategory(transactions, monthB);
+  const mapB = new Map(catB.map((c) => [c.category, c.total]));
+  const allCategories = new Set([...catA.map((c) => c.category), ...catB.map((c) => c.category)]);
+  const result: CategoryComparison[] = [];
+
+  for (const category of allCategories) {
+    const currentAmount = catA.find((c) => c.category === category)?.total ?? 0;
+    const previousAmount = mapB.get(category) ?? 0;
+    const change = currentAmount - previousAmount;
+    const changePct = previousAmount > 0 ? (change / previousAmount) * 100 : currentAmount > 0 ? 100 : 0;
+    result.push({
+      category,
+      currentAmount,
+      previousAmount,
+      change,
+      changePct,
+      direction: changePct > 5 ? "up" : changePct < -5 ? "down" : "same",
+    });
+  }
+  return result.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+}
+
+export type SpendingAnomaly = {
+  category: string;
+  currentAmount: number;
+  averageAmount: number;
+  deviation: number;     // % above/below average
+  direction: "spike" | "drop";
+  message: string;
+};
+
+/** Detects categories where spending spiked or dropped >20% vs lookback average. */
+export function spendingAnomalies(
+  transactions: Tx[],
+  monthKey: string,
+  lookbackMonths = 3,
+): SpendingAnomaly[] {
+  const currentCats = spendingByCategory(transactions, monthKey);
+  const anomalies: SpendingAnomaly[] = [];
+
+  // Build average from lookback months
+  const lookbackTotals: Record<string, number[]> = {};
+  for (let i = 1; i <= lookbackMonths; i++) {
+    const prevMonth = shiftMonthKey(monthKey, -i);
+    const prevCats = spendingByCategory(transactions, prevMonth);
+    for (const c of prevCats) {
+      (lookbackTotals[c.category] ||= []).push(c.total);
+    }
+  }
+
+  for (const cat of currentCats) {
+    const history = lookbackTotals[cat.category] || [];
+    if (history.length === 0) continue;
+    const avg = history.reduce((s, v) => s + v, 0) / history.length;
+    if (avg < 500) continue; // Ignore tiny categories
+    const deviation = ((cat.total - avg) / avg) * 100;
+    if (Math.abs(deviation) >= 20) {
+      const direction = deviation > 0 ? "spike" : "drop";
+      anomalies.push({
+        category: cat.category,
+        currentAmount: cat.total,
+        averageAmount: avg,
+        deviation,
+        direction,
+        message:
+          direction === "spike"
+            ? `Your ${cat.category} spending jumped ${Math.abs(deviation).toFixed(0)}% this month`
+            : `Your ${cat.category} spending dropped ${Math.abs(deviation).toFixed(0)}% this month`,
+      });
+    }
+  }
+  return anomalies.sort((a, b) => Math.abs(b.deviation) - Math.abs(a.deviation));
+}
+
+export type HeatmapCell = {
+  monthKey: string;
+  monthLabel: string;
+  category: string;
+  amount: number;
+  intensity: number; // 0-1 normalized
+};
+
+/** Returns a months × category heatmap grid showing spend intensity. */
+export function spendingHeatmap(
+  transactions: Tx[],
+  endMonth: string,
+  months = 6,
+): { cells: HeatmapCell[]; categories: string[]; monthKeys: string[] } {
+  const monthKeys: string[] = [];
+  for (let i = months - 1; i >= 0; i--) {
+    monthKeys.push(shiftMonthKey(endMonth, -i));
+  }
+
+  // Gather all category data
+  const allData: Map<string, Map<string, number>> = new Map(); // month -> category -> amount
+  const catTotals: Record<string, number> = {};
+
+  for (const mk of monthKeys) {
+    const cats = spendingByCategory(transactions, mk);
+    const catMap = new Map<string, number>();
+    for (const c of cats) {
+      catMap.set(c.category, c.total);
+      catTotals[c.category] = (catTotals[c.category] || 0) + c.total;
+    }
+    allData.set(mk, catMap);
+  }
+
+  // Top categories by total spend across all months
+  const categories = Object.entries(catTotals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([cat]) => cat);
+
+  // Find global max for intensity normalization
+  let maxAmount = 0;
+  for (const catMap of allData.values()) {
+    for (const [cat, amount] of catMap) {
+      if (categories.includes(cat) && amount > maxAmount) maxAmount = amount;
+    }
+  }
+
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const cells: HeatmapCell[] = [];
+  for (const mk of monthKeys) {
+    const catMap = allData.get(mk) || new Map();
+    const mIdx = parseInt(mk.slice(5, 7), 10) - 1;
+    for (const category of categories) {
+      const amount = catMap.get(category) || 0;
+      cells.push({
+        monthKey: mk,
+        monthLabel: MONTH_NAMES[mIdx] || mk,
+        category,
+        amount,
+        intensity: maxAmount > 0 ? amount / maxAmount : 0,
+      });
+    }
+  }
+
+  return { cells, categories, monthKeys };
+}
+
+/** Category-level lifestyle inflation — which categories are inflating fastest. */
+export function categoryInflation(
+  transactions: Tx[],
+  recentMonths = 3,
+): { category: string; recentAvg: number; olderAvg: number; growthPct: number }[] {
+  const now = new Date();
+  const results: { category: string; recentAvg: number; olderAvg: number; growthPct: number }[] = [];
+
+  // Gather recent and older month keys
+  const recentKeys: string[] = [];
+  const olderKeys: string[] = [];
+  for (let i = 0; i < recentMonths; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    recentKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  for (let i = recentMonths; i < recentMonths * 2; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    olderKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  // Sum per category for recent and older
+  const recentMap: Record<string, number> = {};
+  const olderMap: Record<string, number> = {};
+
+  for (const t of transactions) {
+    if (t.type !== "expense") continue;
+    const mk = getMonthKey(t.date);
+    const cat = t.category || "Other";
+    if (recentKeys.includes(mk)) recentMap[cat] = (recentMap[cat] || 0) + Math.abs(t.amount);
+    if (olderKeys.includes(mk)) olderMap[cat] = (olderMap[cat] || 0) + Math.abs(t.amount);
+  }
+
+  const allCats = new Set([...Object.keys(recentMap), ...Object.keys(olderMap)]);
+  for (const cat of allCats) {
+    const recentAvg = (recentMap[cat] || 0) / recentMonths;
+    const olderAvg = (olderMap[cat] || 0) / recentMonths;
+    if (olderAvg < 500 && recentAvg < 500) continue; // Skip tiny categories
+    const growthPct = olderAvg > 0 ? ((recentAvg - olderAvg) / olderAvg) * 100 : recentAvg > 0 ? 100 : 0;
+    results.push({ category: cat, recentAvg, olderAvg, growthPct });
+  }
+
+  return results.sort((a, b) => b.growthPct - a.growthPct);
+}
+
+/** Helper: shift a YYYY-MM string by N months (avoids importing dateUtils circular). */
+function shiftMonthKey(monthStr: string, delta: number): string {
+  const [y, m] = monthStr.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// [P0] Cash Flow Forecast Engine — predicts near-future balance instead of
+// only reporting past balance. Pure, deterministic, no network call.
+// ════════════════════════════════════════════════════════════════════════
+export type ForecastPoint = {
+  date: string;        // YYYY-MM-DD
+  projectedBalance: number;
+  isPast: boolean;
+};
+
+export type CashFlowForecast = {
+  points: ForecastPoint[];
+  endOfMonthBalance: number;
+  lowestPoint: ForecastPoint;
+  willGoBelowZero: boolean;
+  willGoBelowSafetyLine: boolean;
+  daysUntilRisk: number | null; // days from today until balance < safetyLine, or null
+};
+
+/**
+ * Projects balance forward `daysAhead` days using:
+ *  1) Detected recurring transactions (same merchant/category, similar amount,
+ *     recurring cadence) as fixed future events on their known day-of-month.
+ *  2) A day-of-week discretionary spend average from the last 8 weeks, applied
+ *     to remaining days that have no recurring event.
+ * This intentionally avoids an LLM round-trip — it's arithmetic on data
+ * already in memory, so it can run on every Dashboard render.
+ */
+export function forecastCashFlow(
+  transactions: Tx[],
+  currentBalance: number,
+  daysAhead = 30,
+  safetyLine = 0,
+): CashFlowForecast {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // 1) Detect recurring items: group by (title|merchant, roughly same amount),
+  //    keep ones seen in at least 2 of the last 3 months on a similar day-of-month.
+  type Recurring = { key: string; amount: number; type: "income" | "expense"; dayOfMonth: number };
+  const groups: Record<string, { amounts: number[]; days: number[]; type: "income" | "expense" }> = {};
+  const cutoff = new Date(today);
+  cutoff.setDate(cutoff.getDate() - 95);
+  for (const t of transactions) {
+    const d = new Date(t.date);
+    if (d < cutoff) continue;
+    const key = `${(t.merchant || t.title || "").trim().toLowerCase()}|${t.type}`;
+    if (!key.trim()) continue;
+    (groups[key] ||= { amounts: [], days: [], type: t.type }).amounts.push(Math.abs(t.amount));
+    groups[key].days.push(d.getDate());
+  }
+  const recurring: Recurring[] = [];
+  for (const [key, g] of Object.entries(groups)) {
+    if (g.amounts.length < 2) continue; // needs to have repeated
+    const avgAmount = g.amounts.reduce((s, v) => s + v, 0) / g.amounts.length;
+    const avgDay = Math.round(g.days.reduce((s, v) => s + v, 0) / g.days.length);
+    // Only trust it as "recurring" if the amounts are reasonably consistent (low variance)
+    const variance = g.amounts.reduce((s, v) => s + Math.abs(v - avgAmount), 0) / g.amounts.length;
+    if (variance / Math.max(avgAmount, 1) > 0.35) continue; // too noisy to call recurring
+    recurring.push({ key, amount: avgAmount, type: g.type, dayOfMonth: avgDay });
+  }
+
+  // 2) Day-of-week discretionary baseline from the last 56 days of expenses
+  //    that are NOT part of a recurring group (so we don't double count).
+  const recurringKeys = new Set(recurring.map((r) => r.key));
+  const lookback = new Date(today);
+  lookback.setDate(lookback.getDate() - 56);
+  const dowTotals: number[] = [0, 0, 0, 0, 0, 0, 0];
+  const dowCounts: number[] = [0, 0, 0, 0, 0, 0, 0];
+  for (const t of transactions) {
+    if (t.type !== "expense") continue;
+    const d = new Date(t.date);
+    if (d < lookback || d > today) continue;
+    const key = `${(t.merchant || t.title || "").trim().toLowerCase()}|expense`;
+    if (recurringKeys.has(key)) continue;
+    dowTotals[d.getDay()] += Math.abs(t.amount);
+  }
+  const weeksInLookback = 8;
+  const dowAverage = dowTotals.map((total) => total / weeksInLookback);
+
+  // 3) Walk forward day by day
+  const points: ForecastPoint[] = [];
+  let balance = currentBalance;
+  let lowest: ForecastPoint = { date: today.toISOString().slice(0, 10), projectedBalance: balance, isPast: false };
+  let daysUntilRisk: number | null = null;
+
+  for (let i = 0; i <= daysAhead; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+
+    if (i > 0) {
+      // Apply recurring events landing on this day-of-month
+      for (const r of recurring) {
+        if (r.dayOfMonth === d.getDate()) {
+          balance += r.type === "income" ? r.amount : -r.amount;
+        }
+      }
+      // Apply discretionary daily average for this day-of-week
+      balance -= dowAverage[d.getDay()];
+    }
+
+    const point: ForecastPoint = { date: dateStr, projectedBalance: Math.round(balance), isPast: false };
+    points.push(point);
+    if (point.projectedBalance < lowest.projectedBalance) lowest = point;
+    if (daysUntilRisk === null && point.projectedBalance < safetyLine) daysUntilRisk = i;
+  }
+
+  const endOfMonthIdx = Math.min(daysAhead, points.length - 1);
+  return {
+    points,
+    endOfMonthBalance: points[endOfMonthIdx]?.projectedBalance ?? Math.round(balance),
+    lowestPoint: lowest,
+    willGoBelowZero: lowest.projectedBalance < 0,
+    willGoBelowSafetyLine: lowest.projectedBalance < safetyLine,
+    daysUntilRisk,
+  };
+}
+
+/** Detects large recurring items (annual/quarterly cadence) due in the next
+ *  `warnDays` days — used for "bill shock" prevention cards. [P0] */
+export type UpcomingBigBill = { title: string; amount: number; dueInDays: number; cadence: "quarterly" | "annual" };
+export function upcomingBigBills(transactions: Tx[], warnDays = 21): UpcomingBigBill[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const groups: Record<string, { dates: Date[]; amounts: number[] }> = {};
+  for (const t of transactions) {
+    if (t.type !== "expense") continue;
+    const key = (t.merchant || t.title || "").trim().toLowerCase();
+    if (!key) continue;
+    (groups[key] ||= { dates: [], amounts: [] }).dates.push(new Date(t.date));
+    groups[key].amounts.push(Math.abs(t.amount));
+  }
+  const results: UpcomingBigBill[] = [];
+  for (const [key, g] of Object.entries(groups)) {
+    if (g.dates.length < 2) continue;
+    g.dates.sort((a, b) => a.getTime() - b.getTime());
+    const gapsDays: number[] = [];
+    for (let i = 1; i < g.dates.length; i++) {
+      gapsDays.push((g.dates[i].getTime() - g.dates[i - 1].getTime()) / 86400000);
+    }
+    const avgGap = gapsDays.reduce((s, v) => s + v, 0) / gapsDays.length;
+    const isQuarterly = avgGap > 75 && avgGap < 110;
+    const isAnnual = avgGap > 330 && avgGap < 400;
+    if (!isQuarterly && !isAnnual) continue;
+    const lastDate = g.dates[g.dates.length - 1];
+    const nextDue = new Date(lastDate);
+    nextDue.setDate(nextDue.getDate() + Math.round(avgGap));
+    const dueInDays = Math.round((nextDue.getTime() - today.getTime()) / 86400000);
+    if (dueInDays >= 0 && dueInDays <= warnDays) {
+      const avgAmount = g.amounts.reduce((s, v) => s + v, 0) / g.amounts.length;
+      results.push({
+        title: key.replace(/\b\w/g, (c) => c.toUpperCase()),
+        amount: Math.round(avgAmount),
+        dueInDays,
+        cadence: isAnnual ? "annual" : "quarterly",
+      });
+    }
+  }
+  return results.sort((a, b) => a.dueInDays - b.dueInDays);
+}
+

@@ -6,6 +6,10 @@ dist/
 *.log
 .env
 .env.local
+.env.production
+
+# Supabase credentials (use VITE_SUPABASE_* env vars instead)
+utils/supabase/info.tsx
 
 # Android build outputs
 android/app/build/

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
-import { Loader2 } from "lucide-react";
+import { Loader2, WifiOff, AlertTriangle } from "lucide-react";
 import { BottomNav } from "./components/BottomNav";
 import { QuickAdd } from "./components/QuickAdd";
 import { InAppBanner } from "./components/InAppBanner";
@@ -39,6 +39,7 @@ import { Pricing } from "./components/screens/Pricing";
 import { Feedback } from "./components/screens/Feedback";
 import { Auth } from "./components/Auth";
 import { Onboarding } from "./components/Onboarding";
+import { Landing } from "./components/screens/Landing";
 import { StoreProvider } from "./store";
 import { EntitlementsProvider } from "./lib/useEntitlements";
 import { api } from "./lib/api";
@@ -48,16 +49,46 @@ import { Investments } from "./components/screens/Investments";
 import { Gold } from "./components/screens/Gold";
 import { PropertyScreen } from "./components/screens/Property";
 import { CreditScore } from "./components/screens/CreditScore";
+import { CreditCards } from "./components/screens/CreditCards";
 import { FraudAlerts } from "./components/screens/FraudAlerts";
-import { FinancialNews } from "./components/screens/FinancialNews";
 import { PrivacyPolicy } from "./components/screens/PrivacyPolicy";
 import { TermsConditions } from "./components/screens/TermsConditions";
 import { ContactUs } from "./components/screens/ContactUs";
 import { DataSafety } from "./components/screens/DataSafety";
 import { ItrFiling } from "./components/screens/ItrFiling";
 import { CloudBackup } from "./components/screens/CloudBackup";
+import { SpendingPatterns } from "./components/screens/SpendingPatterns";
+import { SavingsFlow } from "./components/screens/SavingsFlow";
+import { FigmaFrameDemo } from "./components/figma/FigmaFrameDemo";
 
-const tabRoots: ScreenId[] = ["dashboard", "transactions", "goals", "coach", "profile"];
+const tabRoots: ScreenId[] = ["dashboard", "transactions", "buckets", "coach", "profile"];
+
+/** Global offline + degraded-service banner */
+function OfflineBanner() {
+  const [offline, setOffline] = useState(!navigator.onLine);
+
+  useEffect(() => {
+    const onOnline = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  if (!offline) return null;
+  return (
+    <div
+      className="absolute top-0 inset-x-0 z-[200] flex items-center gap-2 px-4 py-2.5 text-white text-xs"
+      style={{ background: "#1e1e2e", fontWeight: 600 }}
+    >
+      <WifiOff className="size-3.5 shrink-0" />
+      <span>No internet — some features may not load until you reconnect.</span>
+    </div>
+  );
+}
 
 export function UserApp() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -68,15 +99,15 @@ export function UserApp() {
     if (window.location.hash.includes("type=recovery")) {
       setRecoveryMode(true);
     }
-    
+
     api.session().then((s) => setAuthed(!!s));
     const sub = api.onAuth((signedIn) => setAuthed(signedIn));
     return () => { sub.data.subscription.unsubscribe(); };
   }, []);
 
   return (
-    <div className="size-full flex items-center justify-center bg-slate-100 p-0 md:p-6">
-      <div className="relative w-full h-full md:w-[400px] md:h-[860px] md:rounded-[2.5rem] md:border md:border-slate-300 md:shadow-2xl overflow-hidden bg-background flex flex-col">
+    <div style={{ height: "var(--app-height, 100svh)" }} className="w-full flex items-center justify-center bg-slate-100 p-0 md:p-6">
+      <div style={{ height: "var(--app-height, 100svh)" }} className="relative w-full md:w-[400px] md:h-[860px] md:rounded-[2.5rem] md:border md:border-slate-300 md:shadow-2xl overflow-hidden bg-background app-container">
         {authed === null ? (
           <div className="flex-1 flex items-center justify-center">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -90,7 +121,7 @@ export function UserApp() {
             </EntitlementsProvider>
           </StoreProvider>
         ) : (
-          <Auth onAuthed={() => setAuthed(true)} />
+          <Landing />
         )}
       </div>
     </div>
@@ -205,7 +236,7 @@ function AuthedShell() {
   const back = () => navigate(-1);
   const fallbackBack = () => navigate(screenPath("profile"));
   const isTab = tabRoots.includes(screen);
-  const activeTab = isTab ? screen : "profile";
+  const activeTab = screen === "goals" ? "buckets" : isTab ? screen : "dashboard";
 
   if (routeScreen && !isScreenId(routeScreen)) {
     return <Navigate to="/" replace />;
@@ -226,6 +257,8 @@ function AuthedShell() {
 
   return (
     <>
+      {/* ── Global offline banner ── */}
+      <OfflineBanner />
       {/* ── In-app notification banner ── */}
       <InAppBanner />
 
@@ -240,10 +273,10 @@ function AuthedShell() {
       {screen === "subscriptions" && <Subscriptions onBack={onBack} />}
       {screen === "budgets" && <Budgets onBack={onBack} />}
       {screen === "emergency" && <Emergency onBack={onBack} />}
-      {screen === "reports" && <Reports onBack={onBack} />}
+      {screen === "reports" && <Reports onBack={onBack} go={go} />}
       {screen === "loans" && <Loans onBack={onBack} />}
       {screen === "categories" && <Categories onBack={onBack} />}
-      {screen === "accounts" && <ConnectedAccounts onBack={onBack} />}
+      {screen === "accounts" && <ConnectedAccounts onBack={onBack} go={go} />}
       {screen === "documents" && <DocumentVault onBack={onBack} />}
       {screen === "tax" && <TaxAssistant onBack={onBack} />}
       {screen === "security" && <Security onBack={onBack} />}
@@ -254,7 +287,7 @@ function AuthedShell() {
       {screen === "notifications" && <Notifications onBack={onBack} />}
       {screen === "family" && <Family onBack={onBack} />}
       {screen === "cash" && <CashWallet onBack={onBack} />}
-      {screen === "leakage" && <WealthLeakage onBack={onBack} />}
+      {screen === "leakage" && <WealthLeakage onBack={onBack} onUpgrade={() => go("pricing")} />}
       {screen === "inflation" && <LifestyleInflation onBack={onBack} />}
       {screen === "fire" && <FIRE onBack={onBack} />}
       {screen === "simulator" && <Simulator onBack={onBack} />}
@@ -267,16 +300,19 @@ function AuthedShell() {
       {screen === "gold" && <Gold onBack={onBack} />}
       {screen === "property" && <PropertyScreen onBack={onBack} />}
       {screen === "creditscore" && <CreditScore onBack={onBack} />}
+      {screen === "cards" && <CreditCards onBack={onBack} />}
       {screen === "fraud" && <FraudAlerts onBack={onBack} />}
-      {screen === "news" && <FinancialNews onBack={onBack} />}
       {screen === "itr-filing" && <ItrFiling onBack={onBack} />}
       {screen === "privacy-policy" && <PrivacyPolicy onBack={onBack} />}
       {screen === "terms" && <TermsConditions onBack={onBack} />}
       {screen === "contact" && <ContactUs onBack={onBack} />}
       {screen === "data-safety" && <DataSafety onBack={onBack} onDeleteSuccess={() => { /* api.onAuth listener auto-updates authed */ }} />}
       {screen === "cloud-backup" && <CloudBackup onBack={onBack} />}
+      {screen === "spending-patterns" && <SpendingPatterns onBack={onBack} />}
+      {screen === "money-flow" && <SavingsFlow onBack={onBack} onUpgrade={() => go("pricing")} />}
+      {screen === "figma" && <FigmaFrameDemo />}
 
-      <BottomNav active={activeTab} onChange={go} onAdd={openQuickAdd} />
+      {routeScreen === "figma" ? null : <BottomNav active={activeTab} onChange={go} onAdd={openQuickAdd} />}
       <QuickAdd open={addOpen} onClose={closeQuickAdd} />
     </>
   );
@@ -321,14 +357,17 @@ const screenIds: ScreenId[] = [
   "gold",
   "property",
   "creditscore",
+  "cards",
   "fraud",
-  "news",
   "itr-filing",
   "privacy-policy",
   "terms",
   "contact",
   "data-safety",
   "cloud-backup",
+  "spending-patterns",
+  "money-flow",
+  "figma",
 ];
 
 function isScreenId(value: string): value is ScreenId {

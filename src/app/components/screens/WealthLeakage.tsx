@@ -8,6 +8,7 @@ import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
 import { detectLeaks, opportunityCost, type Leak } from "../../lib/intelligence";
+import { PremiumLock } from "../PremiumLock";
 
 const catIcon: Record<Leak["category"], any> = {
   Subscriptions: Repeat,
@@ -16,6 +17,9 @@ const catIcon: Record<Leak["category"], any> = {
   Travel: Car,
   "Idle Cash": PiggyBank,
   Debt: CreditCard,
+  "Micro Leaks": Sparkles,
+  Frequency: Repeat,
+  Recurring: Repeat,
 };
 const catTint: Record<Leak["category"], string> = {
   Subscriptions: "#F59E0B",
@@ -24,13 +28,16 @@ const catTint: Record<Leak["category"], string> = {
   Travel: "#8B5CF6",
   "Idle Cash": "#10B981",
   Debt: "#DC2626",
+  "Micro Leaks": "#F97316",
+  Frequency: "#8B5CF6",
+  Recurring: "#0EA5E9",
 };
 const sevColor: Record<Leak["severity"], string> = {
   low: "#64748B", medium: "#F59E0B", high: "#DC2626",
 };
 
-export function WealthLeakage({ onBack }: { onBack: () => void }) {
-  const { transactions, subscriptions, assets, liabilities } = useStore();
+export function WealthLeakage({ onBack, onUpgrade }: { onBack: () => void; onUpgrade?: () => void }) {
+  const { transactions, subscriptions, assets, liabilities, addSubscription } = useStore();
   const { leaks, totalAnnual } = useMemo(
     () => detectLeaks(transactions, subscriptions, assets, liabilities),
     [transactions, subscriptions, assets, liabilities],
@@ -116,7 +123,8 @@ export function WealthLeakage({ onBack }: { onBack: () => void }) {
             </div>
           )}
 
-          {/* Grouped leaks */}
+          {/* The summary is free; detailed leak evidence and fixes are Pro. */}
+          <PremiumLock feature="leakage" title="See every leak and fix" description="Your free summary is ready. Upgrade to Pro to see each leak, its evidence, and one-tap fixes." onUpgrade={onUpgrade}>
           {categories.map((cat) => {
             const list = grouped[cat];
             const Icon = catIcon[cat];
@@ -159,6 +167,15 @@ export function WealthLeakage({ onBack }: { onBack: () => void }) {
                             <span className="text-xs text-muted-foreground">10-yr cost: {inr(Math.round(opportunityCost(l.annual, 10)))}</span>
                           </div>
                           <div className="text-xs text-foreground/80 mt-2 leading-relaxed">{l.tip}</div>
+                          {l.category === "Recurring" && (
+                            <button
+                              onClick={() => addSubscription({ name: l.title.replace(" appears to recur monthly", ""), cost: Math.round(l.annual / 12), renewal: "", category: "Detected", status: "active", icon: "repeat", period: "monthly" })}
+                              className="mt-3 rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11px] text-primary"
+                              style={{ fontWeight: 700 }}
+                            >
+                              Track as subscription
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -167,6 +184,7 @@ export function WealthLeakage({ onBack }: { onBack: () => void }) {
               </div>
             );
           })}
+          </PremiumLock>
         </div>
       </Screen>
     </>

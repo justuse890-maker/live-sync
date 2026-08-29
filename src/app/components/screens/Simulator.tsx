@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
-import { Car, Briefcase, Banknote, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Car, Briefcase, Banknote, CheckCircle2, AlertTriangle, Target, Info } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
 import { simulate, netWorth, monthlyFlow, opportunityCost } from "../../lib/intelligence";
 
-type Mode = "buy" | "quit" | "prepay";
+type Mode = "buy" | "quit" | "prepay" | "goal";
 const tabs: { id: Mode; label: string; icon: any }[] = [
   { id: "buy", label: "Big purchase", icon: Car },
   { id: "quit", label: "Quit job", icon: Briefcase },
   { id: "prepay", label: "Prepay loan", icon: Banknote },
+  { id: "goal", label: "Goal timeline", icon: Target },
 ];
 
 export function Simulator({ onBack }: { onBack: () => void }) {
@@ -20,7 +21,7 @@ export function Simulator({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Decision Simulator" subtitle="What if…" showBack onBack={onBack} />
+      <Header title="Money Lab" subtitle="Explore scenarios" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           <div className="flex gap-2">
@@ -35,6 +36,11 @@ export function Simulator({ onBack }: { onBack: () => void }) {
           {mode === "buy" && <BuySim income={flow.income} expense={flow.expense} fund={Math.max(0, nw.netWorth * 0.2)} />}
           {mode === "quit" && <QuitSim expense={flow.expense} liquid={Math.max(0, nw.totalAssets)} />}
           {mode === "prepay" && <PrepaySim liabilities={liabilities} />}
+          {mode === "goal" && <GoalSim />}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 leading-relaxed flex gap-2">
+            <Info className="size-4 shrink-0 text-slate-500" />
+            <span>Educational estimates only. Results use the assumptions you enter and are not a recommendation, prediction, or guarantee.</span>
+          </div>
         </div>
       </Screen>
     </>
@@ -110,6 +116,46 @@ function PrepaySim({ liabilities }: { liabilities: any[] }) {
       </div>
     </>
   );
+}
+
+function GoalSim() {
+  const [target, setTarget] = useState(1000000);
+  const [saved, setSaved] = useState(100000);
+  const [monthly, setMonthly] = useState(15000);
+  const [returnRate, setReturnRate] = useState(8);
+  const result = useMemo(() => goalTimeline(target, saved, monthly, returnRate), [target, saved, monthly, returnRate]);
+  return (
+    <>
+      <InputCard>
+        <Num label="Goal amount (₹)" value={target} onChange={setTarget} />
+        <Num label="Already saved (₹)" value={saved} onChange={setSaved} />
+        <Num label="Monthly contribution (₹)" value={monthly} onChange={setMonthly} />
+        <Num label="Illustrative annual growth %" value={returnRate} onChange={setReturnRate} decimal />
+      </InputCard>
+      <Verdict ok={result.reached} text={result.reached ? `This setup reaches the amount in about ${formatMonths(result.months)}.` : "This setup does not reach the amount within 100 years."} />
+      <div className="grid grid-cols-2 gap-3">
+        <Stat label="Contribution total" value={inr(Math.round(result.contributions))} />
+        <Stat label="Illustrative growth" value={inr(Math.max(0, Math.round(result.value - result.contributions - saved)))} />
+      </div>
+    </>
+  );
+}
+
+function goalTimeline(target: number, saved: number, monthly: number, annualRate: number) {
+  const monthlyRate = Math.max(0, annualRate) / 100 / 12;
+  let value = Math.max(0, saved);
+  let months = 0;
+  while (value < target && months < 1200) {
+    value = value * (1 + monthlyRate) + Math.max(0, monthly);
+    months++;
+  }
+  return { months, value, contributions: Math.max(0, monthly) * months, reached: value >= target };
+}
+
+function formatMonths(months: number) {
+  const years = Math.floor(months / 12);
+  const remaining = months % 12;
+  return years ? `${years}y ${remaining}m` : `${remaining} months`;
 }
 
 function InputCard({ children }: { children: React.ReactNode }) {

@@ -16,6 +16,7 @@ const LIVE_RATE_22K = 6650;
 export function Gold({ onBack }: { onBack: () => void }) {
   const { gold, addGold, removeGold } = useStore();
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form State
   const [name, setName] = useState("");
@@ -46,25 +47,31 @@ export function Gold({ onBack }: { onBack: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !weightGrams || !purchasePrice || !purchaseDate) return;
-    await addGold({
-      name,
-      type,
-      weightGrams: parseFloat(weightGrams),
-      purityKarats: type === "physical" ? parseInt(purityKarats) : 24,
-      purchasePrice: parseFloat(purchasePrice),
-      purchaseDate,
-      notes: notes || undefined,
-    });
-    // Reset Form
-    setName("");
-    setType("physical");
-    setWeightGrams("");
-    setPurityKarats("22");
-    setPurchasePrice("");
-    setPurchaseDate("");
-    setNotes("");
-    setOpen(false);
+    setSubmitting(true);
+    try {
+      await addGold({
+        name: name.trim(),
+        type,
+        weightGrams: parseFloat(weightGrams),
+        purityKarats: type === "physical" ? parseInt(purityKarats) as 22 | 24 : 24,
+        purchasePrice: parseFloat(purchasePrice),
+        purchaseDate,
+        notes: notes ? notes.trim() : undefined,
+      });
+      // Reset Form
+      setName("");
+      setType("physical");
+      setWeightGrams("");
+      setPurityKarats("22");
+      setPurchasePrice("");
+      setPurchaseDate("");
+      setNotes("");
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -145,7 +152,9 @@ export function Gold({ onBack }: { onBack: () => void }) {
                   <label className="text-xs text-muted-foreground font-semibold">Notes</label>
                   <Input placeholder="Locker location, certificate ID, remarks" value={notes} onChange={(e) => setNotes(e.target.value)} />
                 </div>
-                <Button type="submit" className="w-full mt-2">Add Gold Holding</Button>
+                <Button type="submit" disabled={submitting} className="w-full mt-2">
+                  {submitting ? "Adding Gold..." : "Add Gold Holding"}
+                </Button>
               </form>
             </DialogContent>
           </Dialog>

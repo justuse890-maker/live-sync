@@ -16,6 +16,7 @@ const statusBadge: Record<string, { bg: string; text: string; label: string }> =
 export function Subscriptions({ onBack }: { onBack: () => void }) {
   const { subscriptions, addSubscription, removeSubscription } = useStore();
   const [addOpen, setAddOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Add Form States
   const [formName, setFormName] = useState("");
@@ -33,24 +34,29 @@ export function Subscriptions({ onBack }: { onBack: () => void }) {
   const priceIncreases = subscriptions.filter((s) => s.status === "increased");
 
   const handleSaveSubscription = async () => {
+    if (submitting) return;
     const costNum = Number(formCost);
     if (!formName.trim() || !costNum || costNum <= 0) return;
+    setSubmitting(true);
+    try {
+      await addSubscription({
+        name: formName.trim(),
+        cost: costNum,
+        renewal: formRenewal || "Monthly",
+        category: formCategory,
+        status: formStatus,
+        icon: formIcon,
+        trend: "stable",
+        priceChange: 0
+      });
 
-    await addSubscription({
-      name: formName.trim(),
-      cost: costNum,
-      renewal: formRenewal || "Monthly",
-      category: formCategory,
-      status: formStatus,
-      icon: formIcon,
-      trend: "stable",
-      priceChange: 0
-    });
-
-    setAddOpen(false);
-    setFormName("");
-    setFormCost("");
-    setFormRenewal("");
+      setAddOpen(false);
+      setFormName("");
+      setFormCost("");
+      setFormRenewal("");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleKeep = async (sub: Subscription) => {
@@ -255,9 +261,10 @@ export function Subscriptions({ onBack }: { onBack: () => void }) {
 
               <button 
                 onClick={handleSaveSubscription}
-                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20"
+                disabled={submitting}
+                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-40"
               >
-                Start Shield Monitoring
+                {submitting ? "Saving..." : "Start Shield Monitoring"}
               </button>
             </div>
           </div>

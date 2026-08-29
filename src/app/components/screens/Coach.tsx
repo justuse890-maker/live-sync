@@ -116,6 +116,21 @@ export function Coach() {
   const send = async (text: string) => {
     if (!text.trim() || loading || !savedKey) return;
 
+    // Check master AI opt-in setting
+    const aiEnabled = localStorage.getItem("livesync_ai_opt_in") !== "false";
+    if (!aiEnabled) {
+      setMsgs((m) => [
+        ...m,
+        { role: "user", text },
+        {
+          role: "assistant",
+          text: "🔒 AI features are currently disabled in your **Security & Privacy** settings. To use AI Coach, please enable AI Data Sharing in Settings, or use our on-device financial insights.",
+        },
+      ]);
+      setInput("");
+      return;
+    }
+
     const userMsg: Msg = { role: "user", text };
     const updatedMsgs = [...msgs, userMsg];
     setMsgs(updatedMsgs);
@@ -123,50 +138,68 @@ export function Coach() {
     setLoading(true);
 
     try {
+      const hideMerchants = localStorage.getItem("livesync_ai_categories_only") !== "false";
+
+      // ── PRIVACY ENFORCEMENT: ONLY Transactions are shared with AI ──────────
+      // Absolutely NO bank accounts, NO assets, NO loans, NO gold, NO credit score, NO personal names.
+      const categorySummary: Record<string, number> = {};
+      for (const t of transactions) {
+        if (t.type === "expense") {
+          const c = t.category || "Other";
+          categorySummary[c] = (categorySummary[c] || 0) + Math.abs(t.amount);
+        }
+      }
+
+      const totalIncome = transactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+      const totalExpenses = transactions.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
+
       const context = {
-        transactions: transactions.map(t => ({ title: t.title, category: t.category, amount: t.amount, type: t.type, date: t.date })),
-        goals: goals.map(g => ({ name: g.name, target: g.target, current: g.current })),
-        budgets,
-        subscriptions: subscriptions.map(s => ({ name: s.name, cost: s.cost, period: s.period })),
-        loans: loans.map(l => ({ direction: l.direction, amount: l.amount, settled: l.settled })),
-        assets: assets.map(a => ({ category: a.category, value: a.value })),
-        liabilities: liabilities.map(l => ({ category: l.category, value: l.value })),
-        sips: sips.map(s => ({ fundName: s.fundName, amount: s.amount, frequency: s.frequency })),
-        insurance: insurance.map(i => ({ name: i.name, type: i.type, coverageAmount: i.coverageAmount, premiumAmount: i.premiumAmount })),
-        investments: investments.map(inv => ({ name: inv.name, type: inv.type, investedAmount: inv.investedAmount, currentValue: inv.currentValue })),
-        gold: gold.map(g => ({ name: g.name, weightGrams: g.weightGrams, purchasePrice: g.purchasePrice })),
-        properties: properties.map(p => ({ name: p.name, currentValuation: p.currentValuation, rentalIncome: p.rentalIncome })),
-        creditScore: creditScore[0] ?? null,
-        pendingFraudAlerts: fraudAlerts.filter(a => a.status === "pending").length,
+        privacyScope: "TRANSACTIONS_ONLY (Strictly Anonymized)",
+        totalIncome,
+        totalExpenses,
+        monthlySavings: Math.max(0, totalIncome - totalExpenses),
+        categorySpend: categorySummary,
+        recentTransactions: transactions.slice(0, 12).map((t) => ({
+          category: t.category,
+          amount: Math.abs(t.amount),
+          type: t.type,
+          date: t.date,
+          // Only include merchant if user explicitly disabled "Hide merchant names"
+          ...(hideMerchants ? {} : { title: t.merchant || t.title }),
+        })),
       };
 
-      const systemPrompt = `You are LiveSync AI Coach — a world-class personal financial advisor built into the LiveSync app.
-Your job: give concise, actionable, and proactive money advice based on the user's real financial data below.
+      const systemPrompt = `You are LiveSync AI Coach — an on-device personal financial advisor for Indian users.
+Your job: give concise, actionable, and practical money coaching based ONLY on the user's aggregated transaction summary below.
+Privacy Guarantee: You only receive anonymized transaction numbers. No bank credentials, loans, assets, or personal identities are shared.
 Rules:
 - Always use ₹ and Indian numbering (e.g. ₹2,50,000 not ₹250000)
-- Keep replies short and scannable (use bullet points when listing)
-- Be warm but direct — no corporate fluff
-- If data is empty for a section, still give relevant generic advice
-- NEVER mention that you are an AI or that you have limitations
-- All data is stored only on this device and sent directly to Groq. LiveSync never sees it.
+- Keep replies short, encouraging, and scannable (use bullet points)
+- Give practical advice on budgeting, category allocations (50/30/20), and savings rate
+- Do not ask for banking passwords or personal identification
 
-User's financial snapshot (JSON):
+User's Anonymized Transaction Summary:
 ${JSON.stringify(context, null, 0)}`;
 
       const groqMessages = [
         { role: "system", content: systemPrompt },
-        ...updatedMsgs.map(m => ({ role: m.role, content: m.text })),
+        ...updatedMsgs.map((m) => ({ role: m.role, content: m.text })),
       ];
 
       const responseText = await callGroq(savedKey, groqMessages);
-      setMsgs(m => [...m, { role: "assistant", text: responseText }]);
-
+      setMsgs((m) => [...m, { role: "assistant", text: responseText }]);
     } catch (err: any) {
       const msg: string = err?.message || "Unknown error";
       if (msg.startsWith("INVALID_KEY:")) {
-        setMsgs(m => [...m, { role: "assistant", text: "❌ Your Groq API key is invalid or expired. Tap the key icon in the header to update it." }]);
+        setMsgs((m) => [
+          ...m,
+          {
+            role: "assistant",
+            text: "❌ Your Groq API key is invalid or expired. Tap the key icon in the header to update it.",
+          },
+        ]);
       } else {
-        setMsgs(m => [...m, { role: "assistant", text: `⚠️ ${msg}` }]);
+        setMsgs((m) => [...m, { role: "assistant", text: `⚠️ ${msg}` }]);
       }
     } finally {
       setLoading(false);
@@ -192,7 +225,7 @@ ${JSON.stringify(context, null, 0)}`;
               </div>
               <h2 className="font-display text-xl" style={{ fontWeight: 800 }}>LiveSync AI Coach</h2>
               <p className="text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
-                Powered by <span className="text-foreground font-semibold">Groq (Llama)</span> — lightning-fast AI running on your device. Your data <span className="text-foreground font-semibold">never</span> passes through our servers.
+                Uses <span className="text-foreground font-semibold">Groq (Llama)</span>. Your API request goes from this app to Groq; LiveSync does not proxy it through its API.
               </p>
             </div>
 
@@ -253,8 +286,8 @@ ${JSON.stringify(context, null, 0)}`;
                 </div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
                   <span className="text-foreground font-semibold">Privacy & Data Sharing:</span>{" "}
-                  I understand my financial data is sent <em>directly</em> from my device to Groq's servers for AI processing.
-                  LiveSync has <strong>no access</strong> to my API key, chat history, or financial data.
+                  I understand that my message and the selected financial summary are sent <em>directly</em> from my device to Groq for AI processing.
+                  My API key is saved in this app's local storage; LiveSync does not receive it through its API.
                   I can revoke this at any time.
                 </div>
               </button>
@@ -285,11 +318,11 @@ ${JSON.stringify(context, null, 0)}`;
               )}
             </div>
 
-            {/* Privacy badge */}
+            {/* Privacy notice */}
             <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5">
               <Lock className="size-4 text-emerald-600 shrink-0" />
               <p className="text-xs text-emerald-700">
-                <strong>100% private.</strong> Your key & chats are stored only on this device. LiveSync never sees them.
+                <strong>Your choice.</strong> The key is stored locally by the app. Groq processes messages you send; review Groq's terms and privacy policy before continuing.
               </p>
             </div>
           </div>
@@ -326,9 +359,11 @@ ${JSON.stringify(context, null, 0)}`;
 
       {/* Privacy reminder pill */}
       <div className="px-5 pt-3">
-        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2">
+        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200/80 rounded-xl px-3 py-2">
           <Lock className="size-3.5 text-emerald-600 shrink-0" />
-          <p className="text-[11px] text-emerald-700">Chats go directly to Groq from your device. LiveSync has no access.</p>
+          <p className="text-[11px] text-emerald-800 font-medium">
+            🔒 <strong>Privacy Shield Active</strong>: Only anonymized transaction figures are processed. Zero bank accounts, loans, or personal names are shared.
+          </p>
         </div>
       </div>
 
@@ -342,8 +377,10 @@ ${JSON.stringify(context, null, 0)}`;
                 <div className="mx-auto size-14 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-md shadow-primary/20 mb-3">
                   <Sparkles className="size-6 text-white" />
                 </div>
-                <p className="text-sm font-semibold">Ask me anything about your money</p>
-                <p className="text-xs text-muted-foreground">I have full access to your live financial data.</p>
+                <p className="text-sm font-semibold text-slate-800">Ask me anything about your money</p>
+                <p className="text-xs text-muted-foreground">
+                  Analyzing your monthly spend trends with zero personal data leakage.
+                </p>
               </div>
               <div className="text-xs text-muted-foreground px-1 font-semibold uppercase tracking-wide">Suggested</div>
               <div className="space-y-2">

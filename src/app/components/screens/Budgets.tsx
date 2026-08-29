@@ -3,34 +3,7 @@ import { Plus, ChevronLeft, ChevronRight, Trash2, Edit3, X } from "lucide-react"
 import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { useStore, Budget } from "../../store";
-
-// Helper to match months
-function getMonthKey(dateStr: string): string {
-  if (/^\d{4}-\d{2}$/.test(dateStr)) return dateStr;
-  if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 7);
-  const parts = dateStr.split(" ");
-  if (parts.length >= 2) {
-    const monthName = parts[0].toLowerCase();
-    const year = parts[2] || "2026";
-    const monthMap: Record<string, string> = {
-      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
-      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
-    };
-    const mm = monthMap[monthName.slice(0, 3)];
-    if (mm) return `${year}-${mm}`;
-  }
-  return "2026-06";
-}
-
-function formatMonthName(monthStr: string): string {
-  const [year, month] = monthStr.split("-");
-  const monthNames = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
-  const idx = parseInt(month, 10) - 1;
-  return `${monthNames[idx] || month} ${year}`;
-}
+import { getMonthKey, formatMonthName, shiftMonth } from "../../lib/dateUtils";
 
 export function Budgets({ onBack }: { onBack: () => void }) {
   const {
@@ -46,6 +19,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
 
   const [addOpen, setAddOpen] = useState(false);
   const [editBudget, setEditBudget] = useState<Budget | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   
   // Form States
   const [formCategory, setFormCategory] = useState("Food");
@@ -55,15 +29,11 @@ export function Budgets({ onBack }: { onBack: () => void }) {
 
   // Cycle Months
   const handlePrevMonth = () => {
-    const [y, m] = selectedMonth.split("-").map(Number);
-    const prevDate = new Date(y, m - 2, 1);
-    setSelectedMonth(prevDate.toISOString().slice(0, 7));
+    setSelectedMonth(shiftMonth(selectedMonth, -1));
   };
 
   const handleNextMonth = () => {
-    const [y, m] = selectedMonth.split("-").map(Number);
-    const nextDate = new Date(y, m, 1);
-    setSelectedMonth(nextDate.toISOString().slice(0, 7));
+    setSelectedMonth(shiftMonth(selectedMonth, 1));
   };
 
   // Filter budgets for selected month
@@ -85,38 +55,49 @@ export function Budgets({ onBack }: { onBack: () => void }) {
   const totalLimit = monthlyBudgets.reduce((s, b) => s + b.limit, 0);
 
   const handleSaveBudget = async () => {
+    if (submitting) return;
     const limitNum = Number(formLimit);
     if (!limitNum || limitNum <= 0) return;
-    
-    // Check if category budget already exists for this month
-    const existing = monthlyBudgets.find((b) => b.category === formCategory);
-    if (existing) {
-      await updateBudget({
-        ...existing,
-        limit: limitNum,
-        color: formColor
-      });
-    } else {
-      await addBudget({
-        category: formCategory,
-        limit: limitNum,
-        spent: 0,
-        color: formColor,
-        month: selectedMonth
-      });
+    setSubmitting(true);
+    try {
+      // Check if category budget already exists for this month
+      const existing = monthlyBudgets.find((b) => b.category === formCategory);
+      if (existing) {
+        await updateBudget({
+          ...existing,
+          limit: limitNum,
+          color: formColor
+        });
+      } else {
+        await addBudget({
+          category: formCategory,
+          limit: limitNum,
+          spent: 0,
+          color: formColor,
+          month: selectedMonth
+        });
+      }
+      setAddOpen(false);
+      setFormLimit("");
+    } finally {
+      setSubmitting(false);
     }
-    setAddOpen(false);
-    setFormLimit("");
   };
 
   const handleUpdateLimit = async () => {
+    if (submitting) return;
     const limitNum = Number(editLimitVal);
     if (editBudget && limitNum > 0) {
-      await updateBudget({
-        ...editBudget,
-        limit: limitNum
-      });
-      setEditBudget(null);
+      setSubmitting(true);
+      try {
+        await updateBudget({
+          ...editBudget,
+          limit: limitNum
+        });
+        setEditBudget(null);
+      } finally {
+        setSubmitting(false);
+      }
     }
   };
 
@@ -270,9 +251,10 @@ export function Budgets({ onBack }: { onBack: () => void }) {
 
               <button 
                 onClick={handleSaveBudget}
-                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20"
+                disabled={submitting}
+                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-40"
               >
-                Save Budget Limit
+                {submitting ? "Saving..." : "Save Budget Limit"}
               </button>
             </div>
           </div>
@@ -313,9 +295,10 @@ export function Budgets({ onBack }: { onBack: () => void }) {
 
               <button 
                 onClick={handleUpdateLimit}
-                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20"
+                disabled={submitting}
+                className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-40"
               >
-                Update Limit
+                {submitting ? "Updating..." : "Update Limit"}
               </button>
             </div>
           </div>

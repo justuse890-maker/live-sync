@@ -4,6 +4,8 @@
  * No API calls — pure deterministic logic on local state.
  */
 
+import { getMonthKey } from "./dateUtils";
+
 export type SmartNotif = {
   id: string;
   title: string;
@@ -22,7 +24,7 @@ type NotifEngineInput = {
   subscriptions: Array<{ name: string; cost: number; renewal: string }>;
   insurance: Array<{ name: string; premiumAmount: number; dueDate: string }>;
   structuredLoans: Array<{ lenderName: string; emiAmount: number; nextEmiDueDate: string; closed?: boolean }>;
-  creditCards: Array<{ bankName: string; cardName: string; last4Digits: string; statementDate: number; dueDate: number }>;
+  creditCards: Array<{ bankName: string; cardName: string; last4Digits: string; statementDate?: number; dueDate?: number }>;
 };
 
 export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[] {
@@ -50,7 +52,7 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
   }
 
   // ─── 2. Budget Overspend Alert (>85% used) ───────────────────────────────
-  const monthExpenses = input.transactions.filter(t => t.type === "expense" && t.date.startsWith(currentMonth));
+  const monthExpenses = input.transactions.filter(t => t.type === "expense" && getMonthKey(t.date) === currentMonth);
   for (const budget of input.budgets) {
     const actualSpent = monthExpenses
       .filter(t => t.category === budget.category)
@@ -82,7 +84,7 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
     for (const bucket of input.buckets) {
       if (!bucket.monthlySaveTarget || bucket.monthlySaveTarget <= 0) continue;
       const thisMonthContribs = input.bucketContributions
-        .filter(c => c.bucketId === bucket.id && c.date.startsWith(currentMonth))
+        .filter(c => c.bucketId === bucket.id && getMonthKey(c.date) === currentMonth)
         .reduce((s, c) => s + c.amount, 0);
       const halfMonthTarget = bucket.monthlySaveTarget / 2;
       if (thisMonthContribs < halfMonthTarget) {
@@ -136,6 +138,7 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
 
   // ─── 6. Credit Card Bill Due in 5 Days (approximate) ─────────────────────
   for (const card of input.creditCards) {
+    if (!card.statementDate || !card.dueDate) continue;
     // Calculate bill due date = statementDate + dueDate days in current month
     const statementDay = new Date(now.getFullYear(), now.getMonth(), card.statementDate);
     const billDueDate = new Date(statementDay);
@@ -156,12 +159,12 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
   // ─── 7. End-of-Month Summary (days 28-31) ─────────────────────────────────
   if (dayOfMonth >= 28) {
     const monthIncome = input.transactions
-      .filter(t => t.type === "income" && t.date.startsWith(currentMonth))
+      .filter(t => t.type === "income" && getMonthKey(t.date) === currentMonth)
       .reduce((s, t) => s + t.amount, 0);
     const monthExpenseTotal = monthExpenses.reduce((s, t) => s + Math.abs(t.amount), 0);
     const monthSavings = monthIncome - monthExpenseTotal;
     const bucketSavedThisMonth = input.bucketContributions
-      .filter(c => c.date.startsWith(currentMonth))
+      .filter(c => getMonthKey(c.date) === currentMonth)
       .reduce((s, c) => s + c.amount, 0);
 
     if (monthIncome > 0) {
