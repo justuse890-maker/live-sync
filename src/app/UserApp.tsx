@@ -256,7 +256,7 @@ function AuthedShell() {
   const onBack = screen === "profile" ? fallbackBack : back;
 
   return (
-    <>
+    <div className="app-container">
       {/* ── Global offline banner ── */}
       <OfflineBanner />
       {/* ── In-app notification banner ── */}
@@ -314,7 +314,7 @@ function AuthedShell() {
 
       {routeScreen === "figma" ? null : <BottomNav active={activeTab} onChange={go} onAdd={openQuickAdd} />}
       <QuickAdd open={addOpen} onClose={closeQuickAdd} />
-    </>
+    </div>
   );
 }
 

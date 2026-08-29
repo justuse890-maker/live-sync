@@ -1,5 +1,28 @@
 import { useMemo, useEffect, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, Sparkles, Shield, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Wallet, Calendar, ChevronLeft, Droplets, Flame, TrendingUp, PlusCircle, ArrowRightLeft } from "lucide-react";
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  Sparkles,
+  Shield,
+  ChevronRight,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Wallet,
+  Calendar,
+  ChevronLeft,
+  Droplets,
+  Flame,
+  TrendingUp,
+  PlusCircle,
+  ArrowRightLeft,
+  CreditCard as CreditCardIcon,
+  PieChart,
+  Repeat,
+  Layers,
+  Zap,
+  Tag
+} from "lucide-react";
 import { useStore } from "../../store";
 import { inr, ScreenId } from "../types";
 import { Header, Screen } from "../Shell";
@@ -32,7 +55,19 @@ function sanitizeDisplayNumber(val?: any): number {
 }
 
 export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
-  const { ready, transactions, subscriptions, assets, liabilities, buckets, creditCards, selectedMonth, setSelectedMonth, addBucketContribution } = useStore();
+  const {
+    ready,
+    transactions,
+    subscriptions,
+    assets,
+    liabilities,
+    buckets,
+    creditCards,
+    budgets,
+    selectedMonth,
+    setSelectedMonth,
+    addBucketContribution
+  } = useStore();
   const [userName, setUserName] = useState("there");
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
@@ -90,24 +125,33 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
   const emergencyMonths = Math.round((liquidAssets / monthlyBurn) * 10) / 10;
   const fireR = useMemo(() => fire(monthlyExpenses || 1, Math.max(0, livenw), 28), [monthlyExpenses, livenw]);
 
+  // Compute Card Desk quick overview
+  const cardDeskStats = useMemo(() => {
+    const cardsList = creditCards.filter(c => !c.cardType || c.cardType === "credit" || c.cardType === "corporate" || c.cardType === "rupay_upi");
+    const totalLimit = cardsList.reduce((s, c) => s + (c.creditLimit || 0), 0);
+    const totalSpend = monthlyTx.filter(t => t.type === "expense" && t.creditCardId).reduce((s, t) => s + Math.abs(sanitizeDisplayNumber(t.amount)), 0);
+    const utilization = totalLimit > 0 ? Math.min(100, (totalSpend / totalLimit) * 100) : 0;
+    return { count: creditCards.length, totalLimit, totalSpend, utilization };
+  }, [creditCards, monthlyTx]);
+
+  // Compute Budgets quick overview
+  const budgetStats = useMemo(() => {
+    const totalLimit = budgets.reduce((s, b) => s + (b.limit || 0), 0);
+    const totalSpent = budgets.reduce((s, b) => s + (b.spent || 0), 0);
+    const pctUsed = totalLimit > 0 ? Math.min(100, (totalSpent / totalLimit) * 100) : 0;
+    return { totalLimit, totalSpent, pctUsed, count: budgets.length };
+  }, [budgets]);
+
   // Compute health score from real data — 0-based, every point earned from actual data
   const healthScore = useMemo(() => {
     let score = 0;
-    // +5 for being engaged (has any transactions at all)
     if (transactions.length > 0) score += 5;
-    // +20 for having income tracked
     if (monthlyIncome > 0) score += 20;
-    // +20 savings rate bonus (scaled: 30%+ savings = full 20pts)
     if (netSavings > 0 && monthlyIncome > 0) score += Math.min(20, (pct / 30) * 20);
-    // +10 for positive net worth
     if (livenw > 0) score += 10;
-    // +15 expenses < income (spending responsibly)
     if (monthlyExpenses > 0 && monthlyIncome > monthlyExpenses) score += 15;
-    // +10 low leakage (annual leaks < 10% of monthly income)
     if (monthlyIncome > 0 && leaks.totalAnnual < monthlyIncome * 0.1) score += 10;
-    // +5 has savings goals
     if (buckets.length > 0) score += 5;
-    // +15 no leakage at all
     if (leaks.totalAnnual === 0 && transactions.length > 0) score += 15;
     return Math.min(100, Math.round(score));
   }, [transactions, netSavings, monthlyIncome, pct, livenw, buckets, leaks, monthlyExpenses]);
@@ -164,9 +208,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
         severity: gPct > 50 ? "success" : "warning"
       });
     }
-    // [P0] Behavioral anomaly detection — flags drift from the user's OWN
-    // baseline (not a generic benchmark), surfaced proactively instead of
-    // waiting for the user to open Spending Patterns to find it.
+
     const anomalies = spendingAnomalies(transactions, selectedMonth, 3);
     if (anomalies[0] && anomalies[0].direction === "spike") {
       const a = anomalies[0];
@@ -180,9 +222,6 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
       });
     }
 
-    // [P0] Bill shock prevention — surfaces large recurring charges (annual
-    // insurance, quarterly fees) 2-3 weeks before they land, while there's
-    // still time to budget for them.
     const bigBills = upcomingBigBills(transactions, 21);
     if (bigBills[0]) {
       const b = bigBills[0];
@@ -202,7 +241,6 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
     return insights.slice(0, 3);
   }, [pct, monthlyIncome, leaks, buckets, transactions, creditCards, monthlyTx, selectedMonth]);
 
-  // Empty state check
   const hasData = transactions.length > 0;
 
   return (
@@ -210,7 +248,6 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
       <Header title={`Good morning, ${userName}`} subtitle={formatMonthName(selectedMonth)} />
       <Screen>
         {!ready ? (
-          /* ── Skeleton loader: matches actual Dashboard layout to prevent CLS ── */
           <div className="px-5 pt-4 space-y-5 animate-pulse">
             <div className="bg-muted rounded-2xl h-12" />
             <div className="bg-muted rounded-2xl h-44" />
@@ -230,26 +267,71 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
           
           {/* Month Selector Carousel */}
           <div className="flex justify-between items-center bg-card rounded-2xl p-3.5 border border-border/60 shadow-sm">
-            <button onClick={handlePrevMonth} className="size-9 bg-muted hover:bg-muted/80 rounded-xl flex items-center justify-center transition">
+            <button onClick={handlePrevMonth} className="size-9 bg-muted hover:bg-muted/80 rounded-xl flex items-center justify-center transition active:scale-95">
               <ChevronLeft className="size-4" />
             </button>
-            <span className="font-display text-sm font-bold text-slate-800">{formatMonthName(selectedMonth)}</span>
-            <button onClick={handleNextMonth} className="size-9 bg-muted hover:bg-muted/80 rounded-xl flex items-center justify-center transition">
+            <span className="font-display text-sm font-bold text-slate-800 dark:text-slate-100">{formatMonthName(selectedMonth)}</span>
+            <button onClick={handleNextMonth} className="size-9 bg-muted hover:bg-muted/80 rounded-xl flex items-center justify-center transition active:scale-95">
               <ChevronRight className="size-4" />
+            </button>
+          </div>
+
+          {/* Quick Action Shortcuts Hub */}
+          <div className="grid grid-cols-4 gap-2">
+            <button
+              onClick={() => go("cards")}
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-card border border-border/70 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition group"
+            >
+              <div className="size-8 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center mb-1 group-hover:scale-110 transition">
+                <CreditCardIcon className="size-4" />
+              </div>
+              <span className="text-[10px] font-bold text-foreground">Card Desk</span>
+            </button>
+
+            <button
+              onClick={() => go("money-flow")}
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-card border border-border/70 hover:border-emerald-500/50 hover:bg-emerald-500/5 transition group"
+            >
+              <div className="size-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center mb-1 group-hover:scale-110 transition">
+                <Layers className="size-4" />
+              </div>
+              <span className="text-[10px] font-bold text-foreground">Money Flow</span>
+            </button>
+
+            <button
+              onClick={() => go("budgets")}
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-card border border-border/70 hover:border-amber-500/50 hover:bg-amber-500/5 transition group"
+            >
+              <div className="size-8 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center mb-1 group-hover:scale-110 transition">
+                <PieChart className="size-4" />
+              </div>
+              <span className="text-[10px] font-bold text-foreground">Budgets</span>
+            </button>
+
+            <button
+              onClick={() => go("timeline")}
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-card border border-border/70 hover:border-purple-500/50 hover:bg-purple-500/5 transition group"
+            >
+              <div className="size-8 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center mb-1 group-hover:scale-110 transition">
+                <Calendar className="size-4" />
+              </div>
+              <span className="text-[10px] font-bold text-foreground">Timeline</span>
             </button>
           </div>
 
           {/* Health score hero */}
           <button onClick={() => go("health")} className="w-full text-left">
-            <div className="rounded-2xl p-5 bg-gradient-to-br from-primary to-indigo-700 text-white shadow-lg shadow-primary/20">
+            <div className="rounded-3xl p-5 bg-gradient-to-br from-primary via-indigo-600 to-indigo-800 text-white shadow-lg shadow-primary/20">
               <div className="flex items-center gap-4">
                 <ScoreRing score={healthScore} />
                 <div className="flex-1">
-                  <div className="text-white/70 text-xs uppercase tracking-wider">Financial Health</div>
-                  <div className="font-display" style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>
+                  <div className="text-white/70 text-xs uppercase tracking-wider font-semibold">Financial Health</div>
+                  <div className="font-display text-3xl font-black mt-0.5 leading-none">
                     {healthScore}/100
                   </div>
-                  <div className="text-white/80 text-sm mt-1">{healthScore >= 80 ? "Excellent" : healthScore >= 60 ? "Good" : healthScore >= 35 ? "Improving" : "Needs attention"}</div>
+                  <div className="text-white/85 text-xs font-semibold mt-1">
+                    {healthScore >= 80 ? "Excellent" : healthScore >= 60 ? "Good" : healthScore >= 35 ? "Improving" : "Needs attention"}
+                  </div>
                 </div>
                 <ChevronRight className="size-5 text-white/70" />
               </div>
@@ -261,51 +343,128 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
             </div>
           </button>
 
-          {/* [P0] Cash flow forecast — projects balance forward instead of only showing history */}
+          {/* Cash flow forecast card */}
           <ForecastCard transactions={transactions} currentBalance={liquidAssets} safetyLine={Math.max(monthlyExpenses * 0.5, 5000)} />
 
           {/* Wealth intelligence row */}
           <div className="grid grid-cols-2 gap-3">
             <button onClick={() => go("networth")} className="text-left bg-card rounded-2xl p-4 border border-border/60 hover:border-primary/40 transition">
               <div className="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-2"><Wallet className="size-4" /></div>
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Net worth</div>
-              <div className="font-display mt-0.5" style={{ fontSize: 17, fontWeight: 700 }}>{inr(livenw)}</div>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Net worth</div>
+              <div className="font-display mt-0.5 text-base font-black">{inr(livenw)}</div>
             </button>
             <button onClick={() => go("leakage")} className="text-left bg-card rounded-2xl p-4 border border-border/60 hover:border-rose-400 transition">
               <div className="size-9 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center mb-2"><Droplets className="size-4" /></div>
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Annual leakage</div>
-              <div className="font-display text-rose-600 mt-0.5" style={{ fontSize: 17, fontWeight: 700 }}>{inr(Math.round(leaks.totalAnnual))}</div>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Annual leakage</div>
+              <div className="font-display text-rose-600 mt-0.5 text-base font-black">{inr(Math.round(leaks.totalAnnual))}</div>
             </button>
             <button onClick={() => go("fire")} className="text-left bg-card rounded-2xl p-4 border border-border/60 hover:border-violet-400 transition">
               <div className="size-9 rounded-lg flex items-center justify-center mb-2" style={{ background: "#8B5CF615", color: "#8B5CF6" }}><Flame className="size-4" /></div>
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">FIRE progress</div>
-              <div className="font-display mt-0.5" style={{ fontSize: 17, fontWeight: 700 }}>{fireR.progress.toFixed(1)}%</div>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">FIRE progress</div>
+              <div className="font-display mt-0.5 text-base font-black">{fireR.progress.toFixed(1)}%</div>
             </button>
             <button onClick={() => go("inflation")} className="text-left bg-card rounded-2xl p-4 border border-border/60 hover:border-amber-400 transition">
               <div className="size-9 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center mb-2"><TrendingUp className="size-4" /></div>
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Lifestyle inflation</div>
-              <div className={`font-display mt-0.5 ${inflation.verdict === "outpacing" ? "text-rose-600" : "text-emerald-600"}`} style={{ fontSize: 17, fontWeight: 700 }}>{inflation.gap > 0 ? "+" : ""}{inflation.gap.toFixed(1)}%</div>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Lifestyle inflation</div>
+              <div className={`font-display mt-0.5 text-base font-black ${inflation.verdict === "outpacing" ? "text-rose-600" : "text-emerald-600"}`}>{inflation.gap > 0 ? "+" : ""}{inflation.gap.toFixed(1)}%</div>
             </button>
           </div>
 
+          {/* Card Desk Live Widget */}
+          {creditCards.length > 0 && (
+            <button onClick={() => go("cards")} className="w-full text-left">
+              <div className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50/90 to-blue-50/70 p-4 shadow-xs dark:from-indigo-950/40 dark:to-blue-950/30 dark:border-indigo-900/50">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="size-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
+                      <CreditCardIcon className="size-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black text-indigo-950 dark:text-indigo-200">
+                        Card Desk ({cardDeskStats.count} Active Cards)
+                      </div>
+                      <div className="text-[10px] text-indigo-700/80 dark:text-indigo-300/80">
+                        Monthly Spend: {inr(cardDeskStats.totalSpend)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-xs font-black ${cardDeskStats.utilization > 30 ? "text-rose-600" : "text-emerald-600"}`}>
+                      {cardDeskStats.utilization.toFixed(0)}% Used
+                    </span>
+                    <ChevronRight className="size-4 text-indigo-400 inline ml-1" />
+                  </div>
+                </div>
+
+                {cardDeskStats.totalLimit > 0 && (
+                  <div className="h-1.5 rounded-full bg-indigo-200/60 dark:bg-indigo-900 overflow-hidden mt-1">
+                    <div
+                      className={`h-full rounded-full ${cardDeskStats.utilization > 30 ? "bg-rose-500" : "bg-emerald-500"}`}
+                      style={{ width: `${Math.min(100, cardDeskStats.utilization)}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            </button>
+          )}
+
+          {/* Budget Health Quick Widget */}
+          {budgets.length > 0 && (
+            <button onClick={() => go("budgets")} className="w-full text-left">
+              <div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50/90 to-yellow-50/70 p-4 shadow-xs dark:from-amber-950/40 dark:to-yellow-950/30 dark:border-amber-900/50">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="size-8 rounded-xl bg-amber-600 text-white flex items-center justify-center">
+                      <PieChart className="size-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black text-amber-950 dark:text-amber-200">
+                        Monthly Budgets ({budgetStats.count} Tracked)
+                      </div>
+                      <div className="text-[10px] text-amber-700/80 dark:text-amber-300/80">
+                        {inr(budgetStats.totalSpent)} spent of {inr(budgetStats.totalLimit)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-xs font-black ${budgetStats.pctUsed > 90 ? "text-rose-600" : "text-amber-700 dark:text-amber-300"}`}>
+                      {budgetStats.pctUsed.toFixed(0)}%
+                    </span>
+                    <ChevronRight className="size-4 text-amber-400 inline ml-1" />
+                  </div>
+                </div>
+
+                <div className="h-1.5 rounded-full bg-amber-200/60 dark:bg-amber-900 overflow-hidden mt-1">
+                  <div
+                    className={`h-full rounded-full ${budgetStats.pctUsed > 90 ? "bg-rose-500" : "bg-amber-500"}`}
+                    style={{ width: `${Math.min(100, budgetStats.pctUsed)}%` }}
+                  />
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* Spending leaks alert */}
           {leaks.leaks.some((leak) => ["Micro Leaks", "Frequency", "Recurring"].includes(leak.category)) && (
             <button onClick={() => go("leakage")} className="w-full text-left rounded-2xl border border-rose-200 bg-rose-50 p-4">
               <div className="flex items-center gap-3">
                 <div className="size-10 rounded-xl bg-rose-600 text-white flex items-center justify-center"><Droplets className="size-5" /></div>
-                <div className="flex-1"><div className="text-sm text-rose-950" style={{ fontWeight: 700 }}>New spending leaks detected</div><div className="text-xs text-rose-700 mt-0.5">Review small spends, frequency changes, and recurring charges.</div></div>
+                <div className="flex-1"><div className="text-sm text-rose-950 font-bold">New spending leaks detected</div><div className="text-xs text-rose-700 mt-0.5">Review small spends, frequency changes, and recurring charges.</div></div>
                 <ChevronRight className="size-4 text-rose-600" />
               </div>
             </button>
           )}
 
+          {/* Money Flow Banner */}
           <button onClick={() => go("money-flow")} className="w-full text-left rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-violet-50 p-4">
             <div className="flex items-center gap-3">
               <div className="size-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center"><ArrowRightLeft className="size-5" /></div>
-              <div className="flex-1"><div className="text-sm" style={{ fontWeight: 700 }}>Money Flow</div><div className="text-xs text-muted-foreground">See what is left for your future</div></div>
+              <div className="flex-1"><div className="text-sm font-bold text-foreground">Money Flow (Sankey)</div><div className="text-xs text-muted-foreground">Inflow branches to essentials, lifestyle &amp; future surplus</div></div>
               <ChevronRight className="size-4 text-indigo-600" />
             </div>
           </button>
 
+          {/* Financial Timeline */}
           <button onClick={() => go("timeline")} className="w-full text-left">
             <Card>
               <div className="flex items-center gap-3">
@@ -313,7 +472,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
                   <Calendar className="size-5" />
                 </div>
                 <div className="flex-1">
-                  <div className="text-sm" style={{ fontWeight: 600 }}>Financial Timeline</div>
+                  <div className="text-sm font-bold text-foreground">Financial Timeline</div>
                   <div className="text-xs text-muted-foreground">Salary, bills, SIPs, taxes, goals — one view</div>
                 </div>
                 <ChevronRight className="size-4 text-muted-foreground" />
@@ -321,7 +480,7 @@ export function Dashboard({ go }: { go: (id: ScreenId) => void }) {
             </Card>
           </button>
 
-          {/* Cash flow */}
+          {/* Cash flow Area Chart */}
           <Card>
             <SectionHead 
               title="Cash flow" 
