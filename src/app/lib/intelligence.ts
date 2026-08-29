@@ -291,20 +291,60 @@ export function detectLeaks(
 }
 
 // ─── Phase 4: Savings flow ───────────────────────────────────────────────
-const FLOW_NEEDS = new Set(["rent", "grocery", "groceries", "medical", "health", "utilities", "bills", "insurance", "education"]);
-const FLOW_SAVINGS = new Set(["savings", "investment", "sip", "gold", "mutual fund", "stocks", "ppf", "fd", "goal"]);
+const FLOW_NEEDS_CATEGORIES = new Set([
+  "rent", "housing", "grocery", "groceries", "supermarket", "medical", "medicine",
+  "health", "healthcare", "utilities", "utility", "bills", "bill", "electricity",
+  "water", "gas", "lpg", "mobile", "phone", "wifi", "internet", "broadband",
+  "insurance", "education", "school", "tuition", "fuel", "petrol", "diesel",
+  "transport", "transportation", "commute", "toll", "fastag", "maintenance",
+  "society maintenance", "tax", "taxes"
+]);
+
+const FLOW_SAVINGS_CATEGORIES = new Set([
+  "savings", "saving", "investment", "investments", "sip", "sips", "mutual fund",
+  "mutual funds", "stocks", "shares", "gold", "silver", "crypto", "ppf", "epf",
+  "vpf", "nps", "fd", "fixed deposit", "rd", "recurring deposit", "goal", "goals",
+  "emergency fund", "demat", "portfolio"
+]);
+
+const FLOW_EMI_CATEGORIES = new Set([
+  "emi", "emis", "loan", "loans", "repayment", "home loan", "car loan",
+  "personal loan", "education loan", "credit card bill", "card bill", "debt"
+]);
 
 export function needsWantsSavings(transactions: Tx[], monthKey: string) {
   const totals = { needs: 0, wants: 0, savings: 0, emis: 0 };
   for (const t of transactions) {
     if (t.type !== "expense" || getMonthKey(t.date) !== monthKey) continue;
     const amount = Math.abs(t.amount);
-    const category = (t.category || "").toLowerCase();
+    const category = (t.category || "").trim().toLowerCase();
     const label = `${t.title || ""} ${t.merchant || ""} ${category}`.toLowerCase();
-    if (/\bemi\b|loan repayment|loan emi/.test(label)) totals.emis += amount;
-    else if (FLOW_SAVINGS.has(category)) totals.savings += amount;
-    else if (FLOW_NEEDS.has(category)) totals.needs += amount;
-    else totals.wants += amount;
+
+    // 1. EMIs & Debt Repayment
+    if (
+      FLOW_EMI_CATEGORIES.has(category) ||
+      /\b(emi|loan repayment|loan emi|home loan|car loan|personal loan|credit card bill|cc bill|cred payment|hdfc card pay|icici card pay|sbi card pay|axis card pay|loan interest)\b/i.test(label)
+    ) {
+      totals.emis += amount;
+    }
+    // 2. Invested / SIPs / Savings
+    else if (
+      FLOW_SAVINGS_CATEGORIES.has(category) ||
+      /\b(sip|investment|mutual fund|zerodha|groww|kuvera|indmoney|etf|gold purchase|ppf|epf|nps|fixed deposit|recurring deposit|demat)\b/i.test(label)
+    ) {
+      totals.savings += amount;
+    }
+    // 3. Needs (Essentials: Housing, Groceries, Utilities, Bills, Health, Education, Commute, Insurance)
+    else if (
+      FLOW_NEEDS_CATEGORIES.has(category) ||
+      /\b(rent|house rent|society maintenance|grocery|groceries|supermarket|vegetables|milk|dairy|blinkit|zepto|instamart|bigbasket|dmart|electricity|water bill|gas bill|lpg cylinder|cylinder|broadband|wifi|internet|mobile recharge|phone bill|recharge|airtel|jio|medical|medicine|pharmacy|chemist|apollo|pharmeasy|1mg|doctor|hospital|clinic|insurance|lic premium|health insurance|car insurance|term life|school fee|tuition|college fee|fuel|petrol|diesel|cng|fastag|toll|metro card|bus pass|auto fare)\b/i.test(label)
+    ) {
+      totals.needs += amount;
+    }
+    // 4. Default / Lifestyle: Food & Dining, Shopping, Entertainment, Travel, Leisure
+    else {
+      totals.wants += amount;
+    }
   }
   return totals;
 }
@@ -313,7 +353,7 @@ export function savingsFlow(transactions: Tx[], monthKey: string) {
   const income = transactions.filter((t) => t.type === "income" && getMonthKey(t.date) === monthKey).reduce((sum, t) => sum + Math.abs(t.amount), 0);
   const split = needsWantsSavings(transactions, monthKey);
   const spending = split.needs + split.wants + split.savings + split.emis;
-  const leftForFuture = income - spending;
+  const leftForFuture = Math.max(0, income - spending);
   const savingsRate = income > 0 ? (leftForFuture / income) * 100 : 0;
   return { income, ...split, spending, leftForFuture, savingsRate };
 }
