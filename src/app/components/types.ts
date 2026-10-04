@@ -1,5 +1,6 @@
 export type ScreenId =
   | "dashboard"
+  | "household"
   | "transactions"
   | "goals"
   | "buckets"
@@ -23,6 +24,9 @@ export type ScreenId =
   | "calendar"
   | "notifications"
   | "family"
+  | "staff"
+  | "society"
+  | "reminders"
   | "leakage"
   | "inflation"
   | "fire"
@@ -47,8 +51,23 @@ export type ScreenId =
   | "data-safety"
   | "cloud-backup"
   | "spending-patterns"
-  | "money-flow";
+  | "money-flow"
+  | "language-settings"
+  | "notes"
+  | "figma";
 
 
-export const inr = (n: number) =>
-  "₹" + Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+export const inr = (n: number | any) => {
+  const num = typeof n === "number" ? n : Number(n);
+  if (isNaN(num) || !isFinite(num)) return "₹0";
+  const abs = Math.abs(num);
+  // Safe compact representation for extreme numbers (> ₹10 Crore) to protect UI layout
+  if (abs >= 100_000_000) {
+    const cr = abs / 10_000_000;
+    if (cr >= 1_000_000) {
+      return "₹" + (cr / 1_000_000).toLocaleString("en-IN", { maximumFractionDigits: 2 }) + "M Cr";
+    }
+    return "₹" + cr.toLocaleString("en-IN", { maximumFractionDigits: 2 }) + " Cr";
+  }
+  return "₹" + abs.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+};

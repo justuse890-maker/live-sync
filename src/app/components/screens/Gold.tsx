@@ -9,9 +9,9 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Card } from "../screens/Dashboard";
 
-// Mock live gold rate (in INR per gram)
-const LIVE_RATE_24K = 7250;
-const LIVE_RATE_22K = 6650;
+// Gold rate is entered by the user (no network call, no invented number).
+const RATE_KEY = "ls_gold_rate_24k";
+const readRate = () => { try { return Number(localStorage.getItem(RATE_KEY)) || 0; } catch { return 0; } };
 
 export function Gold({ onBack }: { onBack: () => void }) {
   const { gold, addGold, removeGold } = useStore();
@@ -27,12 +27,18 @@ export function Gold({ onBack }: { onBack: () => void }) {
   const [purchaseDate, setPurchaseDate] = useState("");
   const [notes, setNotes] = useState("");
 
+  const [rate24, setRate24] = useState(readRate);
+  const [rateDraft, setRateDraft] = useState("");
+  const LIVE_RATE_24K = rate24;
+  const LIVE_RATE_22K = Math.round(rate24 * (22 / 24));
+
   // Calculations
   const totalWeight = gold.reduce((acc, g) => acc + g.weightGrams, 0);
   const totalCapital = gold.reduce((acc, g) => acc + g.purchasePrice, 0);
 
   // Calculate current value dynamically based on weight & gold type
   const calculateCurrentValue = (g: GoldHolding) => {
+    if (!rate24) return g.purchasePrice; // no rate entered → show what you paid
     if (g.type === "sgb" || g.type === "etf") {
       // Typically SGB/ETFs follow 24K rate
       return g.weightGrams * LIVE_RATE_24K;
@@ -163,15 +169,27 @@ export function Gold({ onBack }: { onBack: () => void }) {
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           {/* Gold Rate Banner */}
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex justify-between items-center text-xs">
-            <div className="flex items-center gap-2">
-              <Coins className="size-4 text-amber-600" />
-              <span className="font-semibold text-amber-800">Est. Gold Rate:</span>
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 text-xs space-y-2">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Coins className="size-4 text-amber-600" />
+                <span className="font-semibold text-amber-800">Today's gold rate (you enter)</span>
+              </div>
+              {rate24 > 0 && (
+                <div className="text-right text-amber-900 font-semibold flex items-center gap-3">
+                  <span>24K: {inr(LIVE_RATE_24K)}/g</span>
+                  <span>22K: {inr(LIVE_RATE_22K)}/g</span>
+                </div>
+              )}
             </div>
-            <div className="text-right text-amber-900 font-semibold flex items-center gap-3">
-              <span>24K: {inr(LIVE_RATE_24K)}/g</span>
-              <span>22K: {inr(LIVE_RATE_22K)}/g</span>
+            <div className="flex gap-2">
+              <input type="number" inputMode="decimal" value={rateDraft} onChange={(e) => setRateDraft(e.target.value)} placeholder={rate24 ? "Update 24K ₹/gram" : "Enter 24K ₹/gram to value your gold"} className="flex-1 rounded-lg border border-amber-300/60 bg-white px-2.5 py-1.5 outline-none" />
+              <button
+                onClick={() => { const v = Number(rateDraft); if (v > 0) { setRate24(v); try { localStorage.setItem(RATE_KEY, String(v)); } catch {} setRateDraft(""); } }}
+                className="px-3 rounded-lg bg-amber-600 text-white font-bold active:scale-95"
+              >Save</button>
             </div>
+            {!rate24 && <div className="text-amber-800/80">Until you enter a rate, holdings are shown at the price you paid.</div>}
           </div>
 
           {/* Overview Hero */}

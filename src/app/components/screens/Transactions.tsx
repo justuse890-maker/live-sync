@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Search,
+  ArrowDownLeft,
   ArrowDownRight,
   ArrowUpRight,
   SlidersHorizontal,
@@ -45,11 +46,14 @@ import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { Tx, canEditTx, useStore } from "../../store";
 import { EditTransaction } from "../EditTransaction";
+import { useTranslation } from "../../lib/i18n";
 import {
   getMonthKey,
   formatMonthName,
   shiftMonth,
   getDayOfMonth,
+  toISODate,
+  displayDay,
 } from "../../lib/dateUtils";
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -96,7 +100,7 @@ function getCategoryIcon(cat?: string) {
   if (c.includes("sub") || c.includes("netflix") || c.includes("spotify") || c.includes("hotstar")) return Zap;
   if (c.includes("ent") || c.includes("movie") || c.includes("game")) return Film;
   if (c.includes("groc") || c.includes("supermarket") || c.includes("blinkit") || c.includes("zepto")) return ShoppingBag;
-  if (c.includes("salary") || c.includes("income") || c.includes("free")) return ArrowUpRight;
+  if (c.includes("salary") || c.includes("income") || c.includes("free")) return ArrowDownLeft;
   return Tag;
 }
 
@@ -112,13 +116,16 @@ const paymentShort = (m: string) =>
   ({ cash: "Cash", upi: "UPI", credit: "Credit", debit: "Debit", other: "Other" } as Record<string, string>)[m] || m;
 
 export function Transactions() {
-  const { transactions, selectedMonth, setSelectedMonth, creditCards } = useStore();
+  const { transactions, selectedMonth, setSelectedMonth, creditCards, structuredLoans, properties } = useStore();
   const cardMap = Object.fromEntries(creditCards.map((c) => [c.id, c]));
+  const loanMap = Object.fromEntries(structuredLoans.map((l) => [l.id, l]));
+  const propertyMap = Object.fromEntries(properties.map((p) => [p.id, p]));
   const [viewMode, setViewMode] = useState<"list" | "analytics">("list");
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
   const [modeFilter, setModeFilter] = useState<string>("All");
   const [editing, setEditing] = useState<Tx | null>(null);
+  const { t } = useTranslation();
 
   // Cycle Months
   const handlePrevMonth = () => {
@@ -154,7 +161,8 @@ export function Transactions() {
       const matchC = cat === "All" || (t.category || "").toLowerCase() === cat.toLowerCase();
       const matchMode =
         modeFilter === "All" ||
-        (t.payments && t.payments.some((p) => p.mode.toLowerCase() === modeFilter.toLowerCase()));
+        (t.payments && t.payments.some((p) => p.mode.toLowerCase() === modeFilter.toLowerCase())) ||
+        (modeFilter.toLowerCase() === "credit" && Boolean(t.creditCardId));
       return matchQ && matchC && matchMode;
     });
   }, [monthlyTx, q, cat, modeFilter]);
@@ -162,9 +170,10 @@ export function Transactions() {
   // Grouped by Date for Timeline List
   const grouped = useMemo(() => {
     return filtered.reduce<Record<string, { items: Tx[]; dayTotal: number }>>((acc, t) => {
-      if (!acc[t.date]) acc[t.date] = { items: [], dayTotal: 0 };
-      acc[t.date].items.push(t);
-      if (t.type === "expense") acc[t.date].dayTotal += Math.abs(t.amount);
+      const k = toISODate(t.date);
+      if (!acc[k]) acc[k] = { items: [], dayTotal: 0 };
+      acc[k].items.push(t);
+      if (t.type === "expense") acc[k].dayTotal += Math.abs(t.amount);
       return acc;
     }, {});
   }, [filtered]);
@@ -254,7 +263,7 @@ export function Transactions() {
 
   return (
     <>
-      <Header title="Transactions" subtitle={formatMonthName(selectedMonth)} />
+      <Header title={t("transactions.title")} subtitle={formatMonthName(selectedMonth)} />
       <Screen>
         <div className="px-5 pt-4 space-y-4 pb-12">
           
@@ -270,7 +279,7 @@ export function Transactions() {
               <span className="font-display text-sm font-bold text-slate-800">
                 {formatMonthName(selectedMonth)}
               </span>
-              <div className="text-[10px] text-muted-foreground">{monthlyTx.length} transactions logged</div>
+              <div className="text-[10px] text-muted-foreground">{t("transactions.logged", { count: String(monthlyTx.length) })}</div>
             </div>
             <button
               onClick={handleNextMonth}
@@ -291,7 +300,7 @@ export function Transactions() {
               }`}
             >
               <ListFilter className="size-3.5" />
-              <span>Activity Feed</span>
+              <span>{t("transactions.activityFeed")}</span>
             </button>
             <button
               onClick={() => setViewMode("analytics")}
@@ -302,29 +311,29 @@ export function Transactions() {
               }`}
             >
               <PieIcon className="size-3.5" />
-              <span>Visual Breakdown</span>
+              <span>{t("transactions.visualBreakdown")}</span>
             </button>
           </div>
 
           {/* Summary KPIs */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-2xl bg-emerald-50/90 border border-emerald-100 p-3.5 shadow-sm">
+            <div className="rounded-2xl bg-emerald-50/90 border border-emerald-100 p-3.5 shadow-sm overflow-hidden min-w-0">
               <div className="flex items-center gap-1 text-xs font-semibold text-emerald-700">
-                <ArrowUpRight className="size-3.5" />
-                <span>Total Income</span>
+                <ArrowDownLeft className="size-3.5" />
+                <span>{t("transactions.totalIncome")}</span>
               </div>
-              <div className="font-display text-emerald-950 mt-1" style={{ fontSize: 18, fontWeight: 700 }}>
+              <div className="font-display text-emerald-950 mt-1 truncate" style={{ fontSize: 18, fontWeight: 700 }} title={inr(monthTotalIn)}>
                 {inr(monthTotalIn)}
               </div>
               <div className="text-[10px] text-emerald-600/80 mt-0.5">{monthlyTx.filter((t) => t.type === "income").length} credits</div>
             </div>
 
-            <div className="rounded-2xl bg-rose-50/90 border border-rose-100 p-3.5 shadow-sm">
+            <div className="rounded-2xl bg-rose-50/90 border border-rose-100 p-3.5 shadow-sm overflow-hidden min-w-0">
               <div className="flex items-center gap-1 text-xs font-semibold text-rose-700">
-                <ArrowDownRight className="size-3.5" />
-                <span>Total Spent</span>
+                <ArrowUpRight className="size-3.5" />
+                <span>{t("transactions.totalSpent")}</span>
               </div>
-              <div className="font-display text-rose-950 mt-1" style={{ fontSize: 18, fontWeight: 700 }}>
+              <div className="font-display text-rose-950 mt-1 truncate" style={{ fontSize: 18, fontWeight: 700 }} title={inr(monthTotalOut)}>
                 {inr(monthTotalOut)}
               </div>
               <div className="text-[10px] text-rose-600/80 mt-0.5">{monthlyTx.filter((t) => t.type === "expense").length} debits</div>
@@ -341,8 +350,8 @@ export function Transactions() {
               <div className="bg-card rounded-2xl p-4 border border-border/60 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-sm font-bold text-slate-800">Where Your Money Went</div>
-                    <div className="text-xs text-muted-foreground">Category spending share</div>
+                    <div className="text-sm font-bold text-slate-800">{t("transactions.whereMoneyWent")}</div>
+                    <div className="text-xs text-muted-foreground">{t("transactions.categorySpending")}</div>
                   </div>
                   <span className="text-xs font-extrabold text-rose-600">{inr(monthTotalOut)}</span>
                 </div>
@@ -615,10 +624,10 @@ export function Transactions() {
 
               {/* Transaction Chronological Feed Grouped by Date */}
               <div className="space-y-4">
-                {Object.entries(grouped).map(([date, groupData]) => (
+                {Object.entries(grouped).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([date, groupData]) => (
                   <div key={date}>
                     <div className="flex items-center justify-between text-xs text-muted-foreground uppercase tracking-wider mb-2 px-1">
-                      <span className="font-bold text-slate-600">{date}</span>
+                      <span className="font-bold text-slate-600">{displayDay(date)}</span>
                       <span className="font-semibold text-rose-600">-{inr(groupData.dayTotal)}</span>
                     </div>
 
@@ -663,16 +672,50 @@ export function Transactions() {
 
                               <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5 truncate">
                                 <span className="font-medium text-slate-600">{t.category}</span>
-                                {t.payments && t.payments.length > 0 && (
+                                {((t.loanId && loanMap[t.loanId]) || (t.creditCardId && cardMap[t.creditCardId]) || (t.payments && t.payments.length > 0)) && (
                                   <>
                                     <span>&middot;</span>
-                                    <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded">
-                                      {t.payments.length === 1
-                                        ? t.payments[0].mode === "credit" && t.creditCardId && cardMap[t.creditCardId]
-                                          ? `Credit · ${cardMap[t.creditCardId].last4Digits}`
-                                          : paymentShort(t.payments[0].mode)
-                                        : `Split ${t.payments.map((p) => paymentShort(p.mode)).join("+")}`}
-                                    </span>
+                                    {t.loanId && loanMap[t.loanId] ? (
+                                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border text-blue-700 bg-blue-50 border-blue-200">
+                                        {loanMap[t.loanId].loanType === "car_loan" ? (
+                                          <Car className="size-3 shrink-0" />
+                                        ) : (
+                                          <Home className="size-3 shrink-0" />
+                                        )}
+                                        <span className="font-bold">{loanMap[t.loanId].lenderName}</span>
+                                        {loanMap[t.loanId].linkedPropertyId && propertyMap[loanMap[t.loanId].linkedPropertyId!] && (
+                                          <span className="text-[10px] text-blue-600/80 font-normal">
+                                            ({propertyMap[loanMap[t.loanId].linkedPropertyId!].name})
+                                          </span>
+                                        )}
+                                        {t.loanPaymentType === "prepayment" ? (
+                                          <span className="bg-amber-100 text-amber-800 text-[9px] px-1 rounded font-bold uppercase">Pre-pay</span>
+                                        ) : (
+                                          <span className="bg-blue-100 text-blue-800 text-[9px] px-1 rounded font-semibold">EMI</span>
+                                        )}
+                                      </span>
+                                    ) : t.creditCardId && cardMap[t.creditCardId] ? (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border"
+                                        style={{
+                                          color: cardMap[t.creditCardId].color || "#4338CA",
+                                          backgroundColor: `${cardMap[t.creditCardId].color || "#4338CA"}15`,
+                                          borderColor: `${cardMap[t.creditCardId].color || "#4338CA"}30`,
+                                        }}
+                                      >
+                                        <CreditCard className="size-3 shrink-0" />
+                                        <span className="font-bold">{cardMap[t.creditCardId].cardName}</span>
+                                        <span className="opacity-75 font-mono text-[10px]">&bull;&bull;&bull;&bull; {cardMap[t.creditCardId].last4Digits}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                        {t.payments && t.payments.length === 1
+                                          ? paymentShort(t.payments[0].mode)
+                                          : t.payments && t.payments.length > 1
+                                          ? `Split ${t.payments.map((p) => paymentShort(p.mode)).join("+")}`
+                                          : "Credit"}
+                                      </span>
+                                    )}
                                   </>
                                 )}
                               </div>
@@ -710,8 +753,8 @@ export function Transactions() {
 
               {/* Audit integrity footer */}
               <div className="text-[11px] text-muted-foreground text-center px-6 pt-2 flex items-center justify-center gap-1.5">
-                <Clock className="size-3" />
-                Entries are editable for 5 minutes after adding, then locked for audit integrity.
+                <Lock className="size-3" />
+                Tap any transaction to view details, correct mistakes, or delete.
               </div>
             </>
           )}

@@ -112,7 +112,7 @@ app.post("/make-server-a3fe149f/admin/bootstrap", async (c) => {
 });
 
 // --- Generic collection routes ---
-const collections = ["transactions", "goals", "buckets", "bucketContributions", "budgets", "subscriptions", "loans", "structuredLoans", "creditCards", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"] as const;
+const collections = ["transactions", "goals", "buckets", "bucketContributions", "budgets", "subscriptions", "loans", "structuredLoans", "creditCards", "categories", "accounts", "documents", "settings", "assets", "liabilities", "lifeEvents", "family", "cashLedger", "cashPockets", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts", "householdStaff", "staffSchedules", "societyNotices", "reminders"] as const;
 type Collection = (typeof collections)[number];
 const EDIT_WINDOW_MS = 5 * 60 * 1000;
 
@@ -1135,8 +1135,10 @@ app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
     await kv.set(keyFor(userId, "bucketContributions", contribId), contrib);
 
     // Update bucket savedAmount
-    bucket.savedAmount = (Number(bucket.savedAmount) || 0) + contrib.amount;
-    if (bucket.savedAmount >= (Number(bucket.targetAmount) || 0)) {
+    const prevSaved = Number(bucket.savedAmount);
+    bucket.savedAmount = (!isNaN(prevSaved) ? prevSaved : 0) + contrib.amount;
+    const targetAmt = Number(bucket.targetAmount);
+    if (!isNaN(targetAmt) && targetAmt > 0 && bucket.savedAmount >= targetAmt) {
       bucket.status = "completed";
     }
     bucket.updatedAt = now;

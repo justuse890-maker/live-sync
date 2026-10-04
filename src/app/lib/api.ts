@@ -3,6 +3,14 @@ import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { nativeStorage } from "./nativeStorage";
 import { encryptFields, decryptFields, clearFieldKeyCache } from "./fieldCrypto";
 import { isInvestorDemo } from "./demo";
+import { redactText } from "./aiPrivacy";
+import { saveAuthSession, clearAuthSession, saveCachedUserId, loadFromCache, saveToCache, clearCache } from "./localCache";
+import { localList, localUpsert, localRemove, localKey, claimDeviceFor, ALL_COLLECTIONS } from "./localDb";
+
+/** Thrown when a write is attempted with no internet connection. */
+export class OfflineError extends Error {
+  constructor() { super("offline"); this.name = "OfflineError"; }
+}
 
 const STORAGE_KEY = "livesync-auth";
 
@@ -34,6 +42,9 @@ export function clearLocalCache() {
 
     // Clear cached encryption key so next sign-in derives a fresh one
     clearFieldKeyCache();
+
+    // Clear persisted auth session from IndexedDB
+    clearAuthSession();
   } catch { /* ignore – private browsing may throw */ }
 }
 
@@ -77,7 +88,7 @@ async function authHeader() {
 
 async function req(path: string, init: RequestInit = {}) {
   // Fail fast if device is offline
-  if (!navigator.onLine) throw new Error("No internet connection. Please check your network and try again.");
+  if (!navigator.onLine) throw new OfflineError();
 
   // Wrap with a 15-second timeout so requests never hang silently
   const controller = new AbortController();
@@ -90,6 +101,7 @@ async function req(path: string, init: RequestInit = {}) {
       headers: { ...(await authHeader()), ...(init.headers || {}) },
     });
     clearTimeout(timeoutId);
+    
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = `API ${init.method || "GET"} ${path} failed: ${res.status} ${body.error || res.statusText}`;
@@ -104,6 +116,53 @@ async function req(path: string, init: RequestInit = {}) {
   }
 }
 
+// ── One-time move of legacy cloud data onto the device ────────────────────
+// Builds before v2.4 kept a copy of user data on the server. The first time a
+// signed-in user opens this version with internet, we copy anything that is
+// not yet on the device, then never read from the server again.
+let _ensurePromise: Promise<void> | null = null;
+let _migrationTriedThisSession = false;
+const MIGRATION_FLAG = "__migrated_to_device_v1__";
+
+export function ensureLocalData(): Promise<void> {
+  if (!_ensurePromise) {
+    _ensurePromise = (async () => {
+      const userId = await getCurrentUserId();
+      await claimDeviceFor(userId);
+      const flag = await loadFromCache<string>(MIGRATION_FLAG);
+      if (flag && flag[0] === userId) return;
+      if (!userId || !navigator.onLine || _migrationTriedThisSession) return;
+      _migrationTriedThisSession = true; // never block the UI twice in one session
+      try {
+        await Promise.race([
+          (async () => {
+            for (const col of ALL_COLLECTIONS) {
+              if (col === "notes" || col === "inbox") continue;
+              try {
+                const r = await req(`/${col}`);
+                const remote = await Promise.all(
+                  ((r.items || []) as any[]).map((it) => decryptFields(col, it, userId).catch(() => it)),
+                );
+                if (remote.length === 0) continue;
+                const key = localKey(col);
+                const local = ((await loadFromCache<any>(key)) ?? []) as any[];
+                const have = new Set(local.map((x) => x?.id));
+                const merged = [...local, ...remote.filter((x) => x && !have.has(x.id))];
+                await saveToCache(key, merged);
+              } catch { /* collection not deployed / offline — skip */ }
+            }
+          })(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("migration timeout")), 20_000)),
+        ]);
+        await saveToCache(MIGRATION_FLAG, [userId] as any);
+      } catch (e) {
+        console.warn("[localDb] legacy migration incomplete, will retry next launch", e);
+      }
+    })();
+  }
+  return _ensurePromise;
+}
+
 export const api = {
   signup: (email: string, password: string, name: string) =>
     req("/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }),
@@ -112,6 +171,11 @@ export const api = {
     if (error) {
       console.error("Sign-in failed:", error.message);
       throw error;
+    }
+    // Persist session and userId so the app works offline after this login
+    if (data.session) {
+      saveAuthSession(data.session).catch(() => {});
+      saveCachedUserId(data.session.user.id).catch(() => {});
     }
     return data;
   },
@@ -126,6 +190,10 @@ export const api = {
     if (error) {
       console.error("Google sign-in failed:", error.message);
       throw error;
+    }
+    if (data.session) {
+      saveAuthSession(data.session).catch(() => {});
+      saveCachedUserId(data.session.user.id).catch(() => {});
     }
     return data;
   },
@@ -143,7 +211,11 @@ export const api = {
     return data;
   },
   signout: async () => {
+    // Financial data stays on this device (it exists nowhere else). Only the
+    // session and transient caches are cleared. A different account signing in
+    // on this device triggers a full wipe — see claimDeviceFor().
     clearLocalCache();
+    _ensurePromise = null;
     return supabase().auth.signOut();
   },
   resetPassword: (email: string) => supabase().auth.resetPasswordForEmail(email, { redirectTo: window.location.origin }),
@@ -152,56 +224,89 @@ export const api = {
   onAuth: (cb: (signedIn: boolean) => void) =>
     supabase().auth.onAuthStateChange((_, s) => cb(!!s)),
 
-  list: <T>(col: string) =>
-    req(`/${col}`).then(async (r) => {
-      const userId = await getCurrentUserId();
-      if (!userId) return r.items as T[];
-      return Promise.all(
-        (r.items as T[]).map((item) => decryptFields(col, item as any, userId) as Promise<T>)
-      );
-    }),
-  create: <T>(col: string, item: Partial<T>) =>
-    getCurrentUserId().then(async (userId) => {
-      const payload = userId
-        ? await encryptFields(col, item as any, userId)
-        : item;
-      const r = await req(`/${col}`, { method: "POST", body: JSON.stringify(payload) });
-      // Decrypt the returned item so the caller gets plaintext
-      return userId
-        ? (await decryptFields(col, r.item as any, userId)) as T
-        : (r.item as T);
-    }),
-  remove: (col: string, id: string) => req(`/${col}/${id}`, { method: "DELETE" }),
-
-  uploadDocument: async (file: File, category: string, name: string, expiry?: string) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("category", category);
-    fd.append("name", name);
-    if (expiry) fd.append("expiry", expiry);
-    const { data } = await supabase().auth.getSession();
-    const token = data.session?.access_token ?? publicAnonKey;
-    const res = await fetch(`${base}/documents/upload`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: fd,
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `Upload failed: ${res.status}`);
-    return body.item;
+  // ── User data: ON-DEVICE ONLY ────────────────────────────────────────
+  // These three methods never touch the network. See localDb.ts.
+  list: async <T>(col: string): Promise<T[]> => {
+    await ensureLocalData();
+    return localList<T>(col);
   },
-  documentUrl: (id: string) => req(`/documents/${id}/url`).then((r) => r.url as string),
+  create: async <T>(col: string, item: Partial<T>): Promise<T> => {
+    await ensureLocalData();
+    // Items queued by older builds may still carry encrypted fields — decrypt
+    // once so on-device data is always plain, readable by this device only.
+    const userId = await getCurrentUserId();
+    const clean = userId ? await decryptFields(col, item as any, userId).catch(() => item) : item;
+    return localUpsert<any>(col, clean as any) as Promise<T>;
+  },
+  remove: async (col: string, id: string) => {
+    await localRemove(col, id);
+    return { ok: true };
+  },
+
+  /** Documents are stored on the device as data-URLs — never uploaded. */
+  uploadDocument: async (file: File, category: string, name: string, expiry?: string) => {
+    if (file.size > 25 * 1024 * 1024) throw new Error("File too large (max 25 MB)");
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+    const item = await localUpsert<any>("documents", {
+      name, category, expiry: expiry || null,
+      fileName: file.name, mimeType: file.type, size: file.size,
+      uploadedAt: new Date().toISOString(),
+    });
+    await saveToCache(`__doc_blob__${item.id}`, [dataUrl] as any);
+    return item;
+  },
+  documentUrl: async (id: string): Promise<string> => {
+    const blob = await loadFromCache<string>(`__doc_blob__${id}`);
+    if (blob && blob[0]) return blob[0];
+    // A document uploaded by an older build may still only exist in the cloud.
+    const r = await req(`/documents/${id}/url`);
+    return r.url as string;
+  },
+
+  /** In-app notification inbox — stored on device. */
+  notifications: async () => localList<{ id: string; title: string; body?: string; kind: string; at: string; read: boolean }>("inbox"),
+  markNotificationsRead: async () => {
+    const items = await localList<any>("inbox");
+    await Promise.all(items.filter((n) => !n.read).map((n) => localUpsert("inbox", { ...n, read: true })));
+    return { ok: true };
+  },
+
+  /**
+   * Erase every copy of this user's data that older app versions stored on the
+   * server. Device data is untouched. Returns how many records were erased.
+   */
+  eraseCloudCopy: async (onProgress?: (done: number, total: number) => void): Promise<number> => {
+    let erased = 0;
+    const cols = ALL_COLLECTIONS.filter((c) => c !== "notes" && c !== "inbox");
+    for (let i = 0; i < cols.length; i++) {
+      onProgress?.(i, cols.length);
+      try {
+        const r = await req(`/${cols[i]}`);
+        for (const it of (r.items || []) as Array<{ id: string }>) {
+          try { await req(`/${cols[i]}/${it.id}`, { method: "DELETE" }); erased++; } catch {}
+        }
+      } catch {}
+    }
+    onProgress?.(cols.length, cols.length);
+    try { localStorage.setItem("livesync_cloud_erased_at", new Date().toISOString()); } catch {}
+    return erased;
+  },
+
   deleteAccount: async () => {
     // A shared demo identity is intentionally non-destructive. Server-side
     // protection should also be enabled for this account before public launch.
     if (isInvestorDemo) throw new Error("The shared investor demo account cannot be deleted.");
     const result = await req("/me/delete", { method: "POST" });
     clearLocalCache();
+    await clearCache(); // account deleted → wipe this device too
     await supabase().auth.signOut();
     return result;
   },
-  notifications: () => req("/me/notifications").then((r) => r.items as Array<{ id: string; title: string; body?: string; kind: string; at: string; read: boolean }>),
-  markNotificationsRead: () => req("/me/notifications/read", { method: "POST" }),
   subscription: async () => {
     try {
       const res = await req("/me/subscription");
@@ -281,7 +386,9 @@ export const api = {
     }
   ): Promise<{ text: string; aiUsed: boolean }> => {
     try {
-      return await req("/ai/negotiation-script", { method: "POST", body: JSON.stringify({ kind, context }) });
+      // Minimised: product name scrubbed of numbers/IDs, amount rounded to ₹100.
+      const safe = { ...context, name: redactText(context.name).slice(0, 40), currentAmount: Math.round(context.currentAmount / 100) * 100 };
+      return await req("/ai/negotiation-script", { method: "POST", body: JSON.stringify({ kind, context: safe }) });
     } catch (err: any) {
       if (err.message?.includes("429")) {
         throw new Error("RATE_LIMIT: Daily AI limit reached (3/3). Resets at midnight.");
@@ -297,4 +404,6 @@ export const api = {
   }> => {
     return req("/ai/status");
   },
+
+  getCurrentUserId,
 };

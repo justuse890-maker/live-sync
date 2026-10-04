@@ -6,6 +6,8 @@ import {
 import { coachSuggestions } from "../../data";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
+import { useTranslation } from "../../lib/i18n";
+import { buildAiContext, redactText } from "../../lib/aiPrivacy";
 
 type Msg = { role: "user" | "assistant"; text: string };
 
@@ -82,6 +84,8 @@ export function Coach() {
   const [checkboxChecked, setCheckboxChecked] = useState(false);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [changingKey, setChangingKey] = useState(false);
+  const [showPayload, setShowPayload] = useState(false);
+  const { t } = useTranslation();
 
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -138,52 +142,25 @@ export function Coach() {
     setLoading(true);
 
     try {
-      const hideMerchants = localStorage.getItem("livesync_ai_categories_only") !== "false";
+      // ── PRIVACY: minimum, anonymous, rounded data only (see lib/aiPrivacy.ts) ──
+      const context = buildAiContext(transactions as any);
 
-      // ── PRIVACY ENFORCEMENT: ONLY Transactions are shared with AI ──────────
-      // Absolutely NO bank accounts, NO assets, NO loans, NO gold, NO credit score, NO personal names.
-      const categorySummary: Record<string, number> = {};
-      for (const t of transactions) {
-        if (t.type === "expense") {
-          const c = t.category || "Other";
-          categorySummary[c] = (categorySummary[c] || 0) + Math.abs(t.amount);
-        }
-      }
-
-      const totalIncome = transactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-      const totalExpenses = transactions.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
-
-      const context = {
-        privacyScope: "TRANSACTIONS_ONLY (Strictly Anonymized)",
-        totalIncome,
-        totalExpenses,
-        monthlySavings: Math.max(0, totalIncome - totalExpenses),
-        categorySpend: categorySummary,
-        recentTransactions: transactions.slice(0, 12).map((t) => ({
-          category: t.category,
-          amount: Math.abs(t.amount),
-          type: t.type,
-          date: t.date,
-          // Only include merchant if user explicitly disabled "Hide merchant names"
-          ...(hideMerchants ? {} : { title: t.merchant || t.title }),
-        })),
-      };
-
-      const systemPrompt = `You are LiveSync AI Coach — an on-device personal financial advisor for Indian users.
-Your job: give concise, actionable, and practical money coaching based ONLY on the user's aggregated transaction summary below.
-Privacy Guarantee: You only receive anonymized transaction numbers. No bank credentials, loans, assets, or personal identities are shared.
+      const systemPrompt = `You are LiveSync AI Coach — a personal money coach for Indian users.
+Give concise, practical, encouraging coaching based ONLY on the anonymous monthly summary below.
+You do not know the user's name, location, accounts or individual transactions, and must not ask for them.
 Rules:
-- Always use ₹ and Indian numbering (e.g. ₹2,50,000 not ₹250000)
-- Keep replies short, encouraging, and scannable (use bullet points)
-- Give practical advice on budgeting, category allocations (50/30/20), and savings rate
-- Do not ask for banking passwords or personal identification
+- Use ₹ and Indian numbering (₹2,50,000)
+- Short, scannable replies (bullets)
+- Budgeting, category allocation (50/30/20), savings-rate advice
+- Never ask for passwords, OTPs, PAN, Aadhaar or account numbers
 
-User's Anonymized Transaction Summary:
-${JSON.stringify(context, null, 0)}`;
+Anonymous monthly summary (amounts rounded to ₹100):
+${JSON.stringify(context)}`;
 
       const groqMessages = [
         { role: "system", content: systemPrompt },
-        ...updatedMsgs.map((m) => ({ role: m.role, content: m.text })),
+        // Only the last 8 turns, scrubbed of phone/email/PAN/account numbers.
+        ...updatedMsgs.slice(-8).map((m) => ({ role: m.role, content: redactText(m.text) })),
       ];
 
       const responseText = await callGroq(savedKey, groqMessages);
@@ -211,8 +188,8 @@ ${JSON.stringify(context, null, 0)}`;
     return (
       <>
         <Header
-          title="AI Coach"
-          subtitle="Setup"
+          title={t("coach.title")}
+          subtitle={t("coach.setup")}
           right={<div className="size-10 rounded-full bg-gradient-to-br from-primary/20 to-indigo-500/20 flex items-center justify-center"><Brain className="size-5 text-primary" /></div>}
         />
         <Screen>
@@ -223,28 +200,28 @@ ${JSON.stringify(context, null, 0)}`;
               <div className="mx-auto size-16 rounded-3xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-lg shadow-primary/25">
                 <Sparkles className="size-7 text-white" />
               </div>
-              <h2 className="font-display text-xl" style={{ fontWeight: 800 }}>LiveSync AI Coach</h2>
+              <h2 className="font-display text-xl" style={{ fontWeight: 800 }}>{t("coach.liveSync")}</h2>
               <p className="text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
-                Uses <span className="text-foreground font-semibold">Groq (Llama)</span>. Your API request goes from this app to Groq; LiveSync does not proxy it through its API.
+                {t("coach.poweredBy")}
               </p>
             </div>
 
             {/* How it works */}
             <div className="bg-primary/5 border border-primary/15 rounded-2xl p-4 space-y-3">
-              <p className="text-xs text-primary font-semibold uppercase tracking-wide">How to get started</p>
+              <p className="text-xs text-primary font-semibold uppercase tracking-wide">{t("coach.howToStart")}</p>
               {[
-                { n: "1", t: "Visit console.groq.com", d: "Create a free account — no credit card needed", link: "https://console.groq.com/keys" },
-                { n: "2", t: "Create an API Key", d: "Click 'Create API Key' and copy it" },
-                { n: "3", t: "Paste it below & agree", d: "Your key stays on your device only" },
+                { n: "1", t_key: "step1Title", d_key: "step1Desc", link: "https://console.groq.com/keys" },
+                { n: "2", t_key: "step2Title", d_key: "step2Desc" },
+                { n: "3", t_key: "step3Title", d_key: "step3Desc" },
               ].map(step => (
                 <div key={step.n} className="flex items-start gap-3">
                   <div className="size-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 text-xs font-bold">{step.n}</div>
                   <div>
                     <div className="text-sm font-semibold flex items-center gap-1">
-                      {step.t}
+                      {t(`coach.${step.t_key}` as any)}
                       {step.link && <a href={step.link} target="_blank" rel="noreferrer" className="text-primary"><ExternalLink className="size-3" /></a>}
                     </div>
-                    <div className="text-xs text-muted-foreground">{step.d}</div>
+                    <div className="text-xs text-muted-foreground">{t(`coach.${step.d_key}` as any)}</div>
                   </div>
                 </div>
               ))}
@@ -254,7 +231,7 @@ ${JSON.stringify(context, null, 0)}`;
             <div className="bg-card border border-border/60 rounded-2xl p-4 space-y-4">
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block" style={{ fontWeight: 600 }}>
-                  Groq API Key {savedKey && <span className="text-emerald-600">· currently set</span>}
+                  {t("coach.groqApiKey")} {savedKey && <span className="text-emerald-600">· {t("coach.currentlySet")}</span>}
                 </label>
                 <div className="relative">
                   <Key className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
@@ -285,10 +262,8 @@ ${JSON.stringify(context, null, 0)}`;
                     : <Square className="size-5 text-muted-foreground group-hover:text-primary transition" />}
                 </div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
-                  <span className="text-foreground font-semibold">Privacy & Data Sharing:</span>{" "}
-                  I understand that my message and the selected financial summary are sent <em>directly</em> from my device to Groq for AI processing.
-                  My API key is saved in this app's local storage; LiveSync does not receive it through its API.
-                  I can revoke this at any time.
+                  <span className="text-foreground font-semibold">{t("coach.privacyDataSharing")}</span>{" "}
+                  {t("coach.privacyText")}
                 </div>
               </button>
 
@@ -305,7 +280,7 @@ ${JSON.stringify(context, null, 0)}`;
                 style={{ fontWeight: 700 }}
               >
                 <Sparkles className="size-4" />
-                {changingKey ? "Update API Key" : "Start AI Coach"}
+                {changingKey ? t("coach.updateApiKey") : t("coach.startCoach")}
               </button>
 
               {changingKey && (
@@ -313,7 +288,7 @@ ${JSON.stringify(context, null, 0)}`;
                   onClick={() => setChangingKey(false)}
                   className="w-full text-sm text-muted-foreground text-center py-1"
                 >
-                  Cancel
+                  {t("coach.cancel")}
                 </button>
               )}
             </div>
@@ -322,7 +297,7 @@ ${JSON.stringify(context, null, 0)}`;
             <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5">
               <Lock className="size-4 text-emerald-600 shrink-0" />
               <p className="text-xs text-emerald-700">
-                <strong>Your choice.</strong> The key is stored locally by the app. Groq processes messages you send; review Groq's terms and privacy policy before continuing.
+                <strong>{t("coach.yourChoice")}</strong> {t("coach.privacyNotice")}
               </p>
             </div>
           </div>
@@ -335,21 +310,21 @@ ${JSON.stringify(context, null, 0)}`;
   return (
     <>
       <Header
-        title="AI Coach"
-        subtitle="Llama · Powered by Groq"
+        title={t("coach.title")}
+        subtitle={t("coach.subtitle")}
         right={
           <div className="flex items-center gap-1">
             <button
               onClick={() => { setChangingKey(true); setDraftKey(""); setCheckboxChecked(false); }}
               className="size-9 rounded-full hover:bg-muted flex items-center justify-center transition text-muted-foreground"
-              title="Change API Key"
+              title={t("coach.changeApiKey")}
             >
               <RefreshCw className="size-4" />
             </button>
             <button
               onClick={revokeKey}
               className="size-9 rounded-full hover:bg-rose-50 text-rose-500 flex items-center justify-center transition"
-              title="Remove API Key & Opt Out"
+              title={t("coach.removeApiKey")}
             >
               <ShieldOff className="size-4" />
             </button>
@@ -357,14 +332,17 @@ ${JSON.stringify(context, null, 0)}`;
         }
       />
 
-      {/* Privacy reminder pill */}
+      {/* Privacy: show exactly what is sent */}
       <div className="px-5 pt-3">
-        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200/80 rounded-xl px-3 py-2">
+        <button onClick={() => setShowPayload((v) => !v)} className="w-full text-left flex items-center gap-2 bg-emerald-50 border border-emerald-200/80 rounded-xl px-3 py-2">
           <Lock className="size-3.5 text-emerald-600 shrink-0" />
-          <p className="text-[11px] text-emerald-800 font-medium">
-            🔒 <strong>Privacy Shield Active</strong>: Only anonymized transaction figures are processed. Zero bank accounts, loans, or personal names are shared.
+          <p className="flex-1 text-[11px] text-emerald-800 font-medium">
+            Only rounded monthly totals are shared — no names, dates, merchants or account numbers. <span className="underline">{showPayload ? "Hide" : "See exactly what AI sees"}</span>
           </p>
-        </div>
+        </button>
+        {showPayload && (
+          <pre className="mt-2 max-h-48 overflow-auto text-[10px] leading-snug bg-[#0F172A] text-emerald-200 rounded-xl p-3 whitespace-pre-wrap">{JSON.stringify(buildAiContext(transactions as any), null, 2)}</pre>
+        )}
       </div>
 
       <Screen>
@@ -377,12 +355,12 @@ ${JSON.stringify(context, null, 0)}`;
                 <div className="mx-auto size-14 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-md shadow-primary/20 mb-3">
                   <Sparkles className="size-6 text-white" />
                 </div>
-                <p className="text-sm font-semibold text-slate-800">Ask me anything about your money</p>
+                <p className="text-sm font-semibold text-slate-800">{t("coach.askAnything")}</p>
                 <p className="text-xs text-muted-foreground">
-                  Analyzing your monthly spend trends with zero personal data leakage.
+                  {t("coach.analyzeSpend")}
                 </p>
               </div>
-              <div className="text-xs text-muted-foreground px-1 font-semibold uppercase tracking-wide">Suggested</div>
+              <div className="text-xs text-muted-foreground px-1 font-semibold uppercase tracking-wide">{t("coach.suggested")}</div>
               <div className="space-y-2">
                 {coachSuggestions.map(s => (
                   <button
@@ -417,7 +395,7 @@ ${JSON.stringify(context, null, 0)}`;
             <div className="flex justify-start">
               <div className="bg-card border border-border/60 rounded-2xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />
-                <span>Thinking at Groq speed...</span>
+                <span>{t("coach.thinking")}</span>
               </div>
             </div>
           )}
@@ -434,7 +412,7 @@ ${JSON.stringify(context, null, 0)}`;
             disabled={loading}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === "Enter" && !e.shiftKey && send(input)}
-            placeholder="Ask anything about your money…"
+            placeholder={t("coach.inputPlaceholder")}
             className="flex-1 bg-transparent px-3 py-2 text-sm outline-none disabled:opacity-50"
           />
           <button

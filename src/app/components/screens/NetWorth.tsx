@@ -3,13 +3,24 @@ import { Plus, Trash2, X, TrendingUp, TrendingDown, Wallet, Loader2 } from "luci
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
-import { Asset, Liability, ASSET_LABELS, LIABILITY_LABELS, DEFAULT_RETURN, netWorth } from "../../lib/intelligence";
+import { Asset, Liability, ASSET_LABELS, LIABILITY_LABELS, DEFAULT_RETURN } from "../../lib/intelligence";
+import { computeSnapshot } from "../../lib/snapshot";
+import { getCurrentMonthKey } from "../../lib/dateUtils";
 
 export function NetWorth({ onBack }: { onBack: () => void }) {
-  const { assets, liabilities, upsertAsset, removeAsset, upsertLiability, removeLiability, ready } = useStore();
+  const store = useStore();
+  const { assets, liabilities, upsertAsset, removeAsset, upsertLiability, removeLiability, ready } = store;
   const [editing, setEditing] = useState<{ kind: "asset" } | { kind: "liability" } | null>(null);
 
-  const { totalAssets, totalLiab, netWorth: nw } = useMemo(() => netWorth(assets, liabilities), [assets, liabilities]);
+  // Same engine as the home screen, so the figure here always matches home.
+  const snap = useMemo(() => computeSnapshot(store as any, getCurrentMonthKey()), [
+    store.assets, store.liabilities, store.investments, store.gold, store.properties, store.structuredLoans, store.loans, store.transactions,
+  ]);
+  const { totalAssets, totalLiab, value: nw } = snap.netWorth;
+  const ownAssetNames = new Set(assets.map((a) => (a.name || "").trim().toLowerCase()));
+  const ownLiabNames = new Set(liabilities.map((l) => (l.name || "").trim().toLowerCase()));
+  const linkedAssets = snap.netWorth.assetLines.filter((l) => !ownAssetNames.has(l.label.trim().toLowerCase()));
+  const linkedLiabs = snap.netWorth.liabLines.filter((l) => !ownLiabNames.has(l.label.trim().toLowerCase()));
 
   // Annualised growth projection
   const projected = useMemo(() => {
@@ -25,7 +36,8 @@ export function NetWorth({ onBack }: { onBack: () => void }) {
         <div className="px-5 pt-4 space-y-4">
           <div className="rounded-2xl bg-gradient-to-br from-primary to-indigo-700 text-white p-5">
             <div className="text-xs uppercase tracking-wider text-white/70">Total net worth</div>
-            <div className="font-display mt-1" style={{ fontSize: 32, fontWeight: 700 }}>{inr(nw)}</div>
+            <div className="font-display mt-1" style={{ fontSize: 32, fontWeight: 700 }}>{nw < 0 ? "−" : ""}{inr(nw)}</div>
+            <div className="text-[11px] text-white/75 mt-0.5">Assets minus loans — only what you've entered below.</div>
             <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-white/15">
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-white/70">Assets</div>
@@ -60,8 +72,15 @@ export function NetWorth({ onBack }: { onBack: () => void }) {
               : liabilities.map((l) => <Row key={l.id} primary={l.name} secondary={`${LIABILITY_LABELS[l.kind]} · ${l.interestRate}% p.a.${l.emi ? ` · EMI ${inr(l.emi)}` : ""}`} amount={inr(l.outstanding)} negative onDelete={() => removeLiability(l.id)} />)}
           </Section>
 
+          {(linkedAssets.length > 0 || linkedLiabs.length > 0) && (
+            <Section title="Also counted (from other screens)">
+              {linkedAssets.map((l, i) => <Row key={`a${i}`} primary={l.label} secondary={`${l.detail} · edit on its own screen`} amount={inr(l.value)} />)}
+              {linkedLiabs.map((l, i) => <Row key={`l${i}`} primary={l.label} secondary={`${l.detail} · edit in Loans`} amount={inr(l.value)} negative />)}
+            </Section>
+          )}
+
           <div className="bg-card rounded-2xl p-4 border border-border/60">
-            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2" style={{ fontWeight: 600 }}>This year</div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2" style={{ fontWeight: 600 }}>This year (at expected returns)</div>
             <div className="flex items-center gap-2 text-sm mb-1">
               <TrendingUp className="size-4 text-emerald-600" />
               Asset growth: <span style={{ fontWeight: 700 }}>{inr(Math.round(projected.annualGain))}</span>
@@ -92,7 +111,7 @@ function Section({ title, right, children }: { title: string; right?: React.Reac
   );
 }
 
-function Row({ primary, secondary, amount, negative, onDelete }: { primary: string; secondary: string; amount: string; negative?: boolean; onDelete: () => void }) {
+function Row({ primary, secondary, amount, negative, onDelete }: { primary: string; secondary: string; amount: string; negative?: boolean; onDelete?: () => void }) {
   return (
     <div className="flex items-center gap-3 p-3.5 border-b border-border/60 last:border-0">
       <div className="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
@@ -103,9 +122,11 @@ function Row({ primary, secondary, amount, negative, onDelete }: { primary: stri
         <div className="text-xs text-muted-foreground truncate">{secondary}</div>
       </div>
       <div className={`text-sm ${negative ? "text-rose-600" : ""}`} style={{ fontWeight: 700 }}>{negative ? "−" : ""}{amount}</div>
-      <button onClick={onDelete} className="size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-rose-600">
-        <Trash2 className="size-4" />
-      </button>
+      {onDelete && (
+        <button onClick={onDelete} className="size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-rose-600">
+          <Trash2 className="size-4" />
+        </button>
+      )}
     </div>
   );
 }

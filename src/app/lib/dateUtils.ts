@@ -220,10 +220,12 @@ export function formatGoalDeadline(dateStr?: string | null): string {
  */
 export function getGoalDeadlineMetrics(
   dateStr?: string | null,
-  targetAmount: number = 0,
-  savedAmount: number = 0
+  targetAmount: number | any = 0,
+  savedAmount: number | any = 0
 ) {
-  const remaining = Math.max(0, targetAmount - savedAmount);
+  const tAmt = Number(targetAmount) || 0;
+  const sAmt = Number(savedAmount) || 0;
+  const remaining = Math.max(0, tAmt - sAmt);
   if (!dateStr || !isValidGoalDate(dateStr)) {
     return {
       hasDeadline: false,
@@ -307,4 +309,33 @@ export function getQuickDatePreset(monthsFromNow: number): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** Local calendar date as YYYY-MM-DD (no timezone shift). */
+export function todayISO(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Normalise any stored date ("2026-10-03", "Oct 03", "03/10/2026"…) to
+ * YYYY-MM-DD. Legacy year-less values take their year from getMonthKey.
+ */
+export function toISODate(dateStr?: string | null): string {
+  if (!dateStr) return todayISO();
+  const s = String(dateStr).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const mk = getMonthKey(s);
+  const day = getDayOfMonth(s) || 1;
+  return `${mk}-${String(day).padStart(2, "0")}`;
+}
+
+/** Friendly day label: "Today", "Yesterday", "Fri, 3 Oct". */
+export function displayDay(dateStr?: string | null): string {
+  const iso = toISODate(dateStr);
+  const today = todayISO();
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (iso === today) return "Today";
+  if (iso === todayISO(y)) return "Yesterday";
+  const d = new Date(`${iso}T12:00:00`);
+  return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 }

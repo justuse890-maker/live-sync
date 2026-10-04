@@ -52,7 +52,7 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               <span className="text-sm font-bold">How we protect your data</span>
             </div>
             <p className="text-xs text-white/80 leading-relaxed">
-              Supported sensitive fields are encrypted on your device with AES-256-GCM before they are sent to our servers. No system can guarantee absolute security; keep your device and sign-in credentials protected.
+              Your financial records are stored only in this phone's private app storage — they are not uploaded to our servers. Keep your phone locked and use the app lock in Security for extra protection.
             </p>
           </div>
 
@@ -65,15 +65,15 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               icon={<Cloud className="size-4" />}
               color="text-indigo-500"
               bg="bg-indigo-500/10"
-              title="Cloud-synced to Supabase"
-              desc="Your app records are synchronised to our cloud database. Supported sensitive fields are encrypted by the app before upload."
+              title="On this device only"
+              desc="Transactions, notes, budgets, loans and documents live in the app's private storage on this phone. Only your sign-in email is known to our server."
             />
             <SafetyRow
               icon={<Lock className="size-4" />}
               color="text-emerald-500"
               bg="bg-emerald-500/10"
-              title="Field-level encryption (AES-256-GCM)"
-              desc="The app encrypts supported sensitive fields, including transaction amounts and names, before upload. Structural fields needed for the service may remain unencrypted."
+              title="Encrypted backups you control"
+              desc="Google Drive backups are encrypted with your passphrase (AES-256-GCM) before leaving the phone and go to your own Drive."
             />
             <SafetyRow
               icon={<Smartphone className="size-4" />}
@@ -94,7 +94,7 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               color="text-sky-500"
               bg="bg-sky-500/10"
               title="Auto-saved on every action"
-              desc='Changes are saved through the app when you are online. Check that a save completed before closing the app; network or service failures can occur.'
+              desc='Every change is saved on this phone instantly — no internet needed. A second safety copy is kept by Android so app updates never lose data.'
               last
             />
           </div>
@@ -105,10 +105,10 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-3">When you sign out</div>
             </div>
             <div className="px-4 pb-4 space-y-2">
-              <CheckRow icon="✅" text="Your cloud data is preserved — nothing is deleted" />
+              <CheckRow icon="✅" text="Your data stays on this phone — nothing is deleted" />
               <CheckRow icon="🔒" text="Your session token is invalidated immediately" />
-              <CheckRow icon="🧹" text="All local news cache and session data is wiped from this device" />
-              <CheckRow icon="📱" text="When you sign back in, data re-syncs from the cloud" />
+              <CheckRow icon="🧹" text="Only the news cache and session are cleared" />
+              <CheckRow icon="📱" text="When you sign back in, your data is right here" />
             </div>
           </div>
 
@@ -166,7 +166,7 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               </div>
               <div className="flex-1">
                 <div className="text-sm font-semibold">Sign out of this device</div>
-                <div className="text-xs text-muted-foreground mt-0.5">Your data stays in the cloud safely</div>
+                <div className="text-xs text-muted-foreground mt-0.5">Your data stays safely on this phone</div>
               </div>
             </button>
 
@@ -198,10 +198,10 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               <span className="text-base font-bold">Sign out?</span>
             </div>
             <div className="space-y-2 mb-5">
-              <CheckRow icon="✅" text="Your data stays safely in the cloud" />
+              <CheckRow icon="✅" text="Your data stays safely on this phone" />
               <CheckRow icon="🔒" text="Session ends on this device" />
-              <CheckRow icon="🧹" text="Local cache cleared from this device" />
-              <CheckRow icon="📱" text="Sign back in any time to restore everything" />
+              <CheckRow icon="🧹" text="Only the session is cleared" />
+              <CheckRow icon="📱" text="Sign back in any time — everything is still here" />
             </div>
             <div className="flex gap-2">
               <button

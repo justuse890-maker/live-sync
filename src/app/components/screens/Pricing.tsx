@@ -43,7 +43,7 @@ const PLAN_FEATURES = {
     "AI Financial Coach (Private, anonymized queries)",
     "FIRE Retirement & Independence Engine",
     "Wealth Leakage & Lifestyle Inflation Detectors",
-    "Encrypted Document Vault (SSL storage)",
+    "Private on-device Document Vault",
     "Statement CSV & bank statement import tool",
     "Full multi-year & weekly comparative analytics",
     "Cross-device encrypted backup & sync",

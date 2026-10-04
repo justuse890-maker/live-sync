@@ -4,6 +4,8 @@ import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { useStore, Budget } from "../../store";
 import { getMonthKey, formatMonthName, shiftMonth } from "../../lib/dateUtils";
+import { useTranslation } from "../../lib/i18n";
+import { feedback } from "../../lib/feedback";
 
 export function Budgets({ onBack }: { onBack: () => void }) {
   const {
@@ -20,6 +22,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
   const [addOpen, setAddOpen] = useState(false);
   const [editBudget, setEditBudget] = useState<Budget | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { t } = useTranslation();
   
   // Form States
   const [formCategory, setFormCategory] = useState("Food");
@@ -37,18 +40,30 @@ export function Budgets({ onBack }: { onBack: () => void }) {
   };
 
   // Filter budgets for selected month
-  const monthlyBudgets = budgets.filter((b) => (b.month || "2026-06") === selectedMonth);
+  // A budget without a month is a standing monthly budget (applies every month).
+  const monthlyBudgets = budgets.filter((b) => (b.month ? b.month === selectedMonth : true));
 
   // Compute spent amount per budget category dynamically from transactions
   const getCategorySpent = (b: Budget) => {
-    const txSpent = transactions
-      .filter((t) => t.category === b.category && t.type === "expense" && getMonthKey(t.date) === selectedMonth)
+    // Always computed live from this month's expenses in that category.
+    return transactions
+      .filter((t) => (t.category || "").trim().toLowerCase() === (b.category || "").trim().toLowerCase() && t.type === "expense" && getMonthKey(t.date) === selectedMonth)
       .reduce((s, t) => s + Math.abs(t.amount), 0);
-    // Fallback to budget.spent if it's June 2026 (to preserve seed presentation)
-    if (selectedMonth === "2026-06" && b.id.startsWith("seed-budget-")) {
-      return Math.max(b.spent || 0, txSpent);
+  };
+
+  const prevMonth = shiftMonth(selectedMonth, -1);
+  const prevBudgets = budgets.filter((b) => b.month === prevMonth);
+  const copyPrevious = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      for (const b of prevBudgets) {
+        await addBudget({ category: b.category, limit: b.limit, spent: 0, color: b.color, month: selectedMonth });
+      }
+      feedback({ kind: "success", title: `${prevBudgets.length} budgets copied`, subtitle: `From ${formatMonthName(prevMonth)}` });
+    } finally {
+      setSubmitting(false);
     }
-    return txSpent;
   };
 
   const totalSpent = monthlyBudgets.reduce((s, b) => s + getCategorySpent(b), 0);
@@ -79,6 +94,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
       }
       setAddOpen(false);
       setFormLimit("");
+      feedback({ kind: "success", title: `${formCategory} budget saved`, subtitle: `Limit ₹${limitNum.toLocaleString("en-IN")} for ${formatMonthName(selectedMonth)}` });
     } finally {
       setSubmitting(false);
     }
@@ -103,7 +119,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Budgets" subtitle={formatMonthName(selectedMonth)} showBack onBack={onBack} />
+      <Header title={t("budgets.title")} subtitle={formatMonthName(selectedMonth)} showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4">
           
@@ -122,13 +138,13 @@ export function Budgets({ onBack }: { onBack: () => void }) {
           <div className="bg-card rounded-2xl p-5 border border-border/60 shadow-sm">
             <div className="flex justify-between items-baseline">
               <div>
-                <div className="text-xs text-muted-foreground">Total spent this month</div>
+                <div className="text-xs text-muted-foreground">{t("budgets.totalSpent")}</div>
                 <div className="font-display mt-1" style={{ fontSize: 28, fontWeight: 700 }}>{inr(totalSpent)}</div>
               </div>
               <div className="text-right">
                 <div className="text-xs text-muted-foreground">of {inr(totalLimit)} limit</div>
                 <div className={`text-sm font-semibold mt-1 ${totalLimit - totalSpent >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                  {totalLimit - totalSpent >= 0 ? `${inr(totalLimit - totalSpent)} left` : `${inr(totalSpent - totalLimit)} over`}
+                  {totalLimit - totalSpent >= 0 ? `${inr(totalLimit - totalSpent)} ${t("budgets.left", { amount: "" }).replace(" ", "")}` : `${inr(totalSpent - totalLimit)} ${t("budgets.over", { amount: "" }).replace(" ", "")}`}
                 </div>
               </div>
             </div>
@@ -145,7 +161,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
           {/* Add Category Budget Trigger */}
           <button onClick={() => setAddOpen(true)} className="w-full rounded-2xl border-2 border-dashed border-border hover:border-primary/50 text-muted-foreground hover:text-primary py-3.5 flex items-center justify-center gap-2 transition bg-card hover:bg-primary/5">
             <Plus className="size-4" />
-            <span className="text-sm font-bold">Add category budget</span>
+            <span className="text-sm font-bold">{t("budgets.addCategoryBudget")}</span>
           </button>
 
           {/* Budgets List */}
@@ -181,7 +197,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                   </div>
                   {over && (
                     <div className="text-[11px] text-rose-600 mt-1.5 font-bold">
-                      ⚠ {p >= 100 ? "Limit exceeded!" : `${p.toFixed(0)}% used — limit spending`}
+                      ⚠ {p >= 100 ? t("budgets.limitExceeded") : t("budgets.limitSpending", { pct: p.toFixed(0) })}
                     </div>
                   )}
                 </div>
@@ -189,8 +205,13 @@ export function Budgets({ onBack }: { onBack: () => void }) {
             })}
             {monthlyBudgets.length === 0 && (
               <div className="text-center py-10 bg-card rounded-2xl border border-dashed border-border/80">
-                <p className="text-sm text-muted-foreground">No budgets set for this month.</p>
-                <button onClick={() => setAddOpen(true)} className="text-xs text-primary font-bold mt-1 hover:underline">Set one now</button>
+                <p className="text-sm text-muted-foreground">{t("budgets.noBudgets")}</p>
+                <button onClick={() => setAddOpen(true)} className="text-xs text-primary font-bold mt-1 hover:underline">{t("budgets.setOneNow")}</button>
+                {prevBudgets.length > 0 && (
+                  <button onClick={copyPrevious} disabled={submitting} className="block mx-auto mt-3 text-xs font-bold text-white bg-primary px-4 py-2 rounded-full active:scale-95">
+                    Copy {prevBudgets.length} budgets from {formatMonthName(prevMonth, "short")}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -203,7 +224,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
           <div className="absolute inset-0 bg-black/40 animate-in fade-in" />
           <div onClick={(e) => e.stopPropagation()} className="relative w-full bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200">
             <div className="flex justify-between items-center mb-4">
-              <div className="font-display font-bold text-lg text-slate-800">Set Category Budget</div>
+              <div className="font-display font-bold text-lg text-slate-800">{t("budgets.setCategoryBudget")}</div>
               <button onClick={() => setAddOpen(false)} className="size-8 rounded-full bg-muted flex items-center justify-center">
                 <X className="size-4" />
               </button>
@@ -211,7 +232,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
             
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1">Select Category</label>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">{t("budgets.selectCategory")}</label>
                 <select 
                   value={formCategory}
                   onChange={(e) => setFormCategory(e.target.value)}
@@ -224,7 +245,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
               </div>
 
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1 font-display">Limit (₹)</label>
+                <label className="text-xs text-muted-foreground font-bold block mb-1 font-display">{t("budgets.limitAmount")}</label>
                 <input 
                   type="number"
                   inputMode="decimal"
@@ -236,7 +257,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
               </div>
 
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1">Theme Color</label>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">{t("budgets.themeColor")}</label>
                 <div className="flex gap-2.5">
                   {["#1E40AF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899"].map((color) => (
                     <button 
@@ -254,7 +275,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                 disabled={submitting}
                 className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-40"
               >
-                {submitting ? "Saving..." : "Save Budget Limit"}
+                {submitting ? t("budgets.saving") : t("budgets.saveBudgetLimit")}
               </button>
             </div>
           </div>
@@ -267,7 +288,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
           <div className="absolute inset-0 bg-black/40 animate-in fade-in" />
           <div onClick={(e) => e.stopPropagation()} className="relative w-full bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200">
             <div className="flex justify-between items-center mb-4">
-              <div className="font-display font-bold text-lg text-slate-800">Edit Budget Limit</div>
+              <div className="font-display font-bold text-lg text-slate-800">{t("budgets.editBudgetLimit")}</div>
               <button onClick={() => setEditBudget(null)} className="size-8 rounded-full bg-muted flex items-center justify-center">
                 <X className="size-4" />
               </button>
@@ -275,14 +296,14 @@ export function Budgets({ onBack }: { onBack: () => void }) {
             
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1">Category</label>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">{t("budgets.category")}</label>
                 <div className="w-full rounded-xl bg-muted/60 px-3.5 py-2.5 text-sm font-semibold text-slate-700">
                   {editBudget.category}
                 </div>
               </div>
 
               <div>
-                <label className="text-xs text-muted-foreground font-bold block mb-1 font-display">New Limit (₹)</label>
+                <label className="text-xs text-muted-foreground font-bold block mb-1 font-display">{t("budgets.newLimit")}</label>
                 <input 
                   type="number"
                   inputMode="decimal"
@@ -298,7 +319,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                 disabled={submitting}
                 className="w-full rounded-xl bg-primary text-primary-foreground py-3 text-sm font-semibold hover:bg-primary/95 transition shadow-md shadow-primary/20 disabled:opacity-40"
               >
-                {submitting ? "Updating..." : "Update Limit"}
+                {submitting ? t("budgets.updating") : t("budgets.updateLimit")}
               </button>
             </div>
           </div>

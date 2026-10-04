@@ -348,3 +348,60 @@ export function hasPlaintextFields(collection: string, item: Record<string, any>
 export function getEncryptableCollections(): string[] {
   return Object.keys(SENSITIVE_FIELDS);
 }
+
+/**
+ * Synchronously clean bucket fields for safe display:
+ * - Replaces any unresolved "enc:" prefixes with user-friendly text
+ * - Normalizes numeric amounts to valid numbers
+ * - Corrects erroneous "completed" status if savedAmount < targetAmount
+ */
+export function cleanBucketFields<T extends Record<string, any>>(b: T): T {
+  if (!b) return b;
+  const item = { ...b } as any;
+  if (typeof item.name === "string" && item.name.startsWith(ENC_PREFIX)) {
+    item.name = "Goal Bucket";
+  }
+  if (typeof item.description === "string" && item.description.startsWith(ENC_PREFIX)) {
+    item.description = "";
+  }
+  const targetNum = Number(item.targetAmount);
+  item.targetAmount = isNaN(targetNum) ? 0 : targetNum;
+
+  const savedNum = Number(item.savedAmount);
+  item.savedAmount = isNaN(savedNum) ? 0 : savedNum;
+
+  if (item.monthlySaveTarget !== undefined && item.monthlySaveTarget !== null) {
+    const mst = Number(item.monthlySaveTarget);
+    item.monthlySaveTarget = isNaN(mst) ? undefined : mst;
+  }
+
+  if (item.targetAmount > 0) {
+    if (item.savedAmount >= item.targetAmount) {
+      item.status = "completed";
+    } else if (item.status === "completed") {
+      item.status = "active";
+    }
+  }
+  return item;
+}
+
+/**
+ * Asynchronously auto-heal a bucket:
+ * Decrypts any fields with "enc:" using the device crypto keys,
+ * then normalizes amounts and status.
+ */
+export async function sanitizeBucket(b: any, userId?: string | null): Promise<any> {
+  if (!b) return b;
+  let item = { ...b };
+  const hasEnc = Object.values(item).some(
+    (v) => typeof v === "string" && v.startsWith(ENC_PREFIX)
+  );
+  if (hasEnc && userId) {
+    try {
+      item = await decryptFields("buckets", item, userId);
+    } catch (e) {
+      console.warn("Failed to decrypt bucket:", e);
+    }
+  }
+  return cleanBucketFields(item);
+}

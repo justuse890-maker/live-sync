@@ -55,7 +55,7 @@ export function TaxAssistant({ onBack }: { onBack: () => void }) {
 
 function NonIndiaTax({ onBack }: { onBack: () => void }) {
   const { pack } = useCountry();
-  const [income, setIncome] = useState(1200000);
+  const [income, setIncome] = useState(0);
   const tax = computeTaxPack(income, pack.code);
   return (
     <>
@@ -102,10 +102,10 @@ function TaxAssistantInner({ onBack }: { onBack: () => void }) {
 }
 
 function TaxAssistantIndia({ onBack }: { onBack: () => void }) {
-  const [gross, setGross] = useState(1200000);
-  const [c80C, set80C] = useState(150000);
-  const [c80D, set80D] = useState(25000);
-  const [nps, setNps] = useState(50000);
+  const [gross, setGross] = useState(0);
+  const [c80C, set80C] = useState(0);
+  const [c80D, set80D] = useState(0);
+  const [nps, setNps] = useState(0);
   const [hra, setHra] = useState(0);
   const [homeLoan, setHomeLoan] = useState(0);
 

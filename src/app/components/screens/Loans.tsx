@@ -1,8 +1,18 @@
 import { useState, useMemo } from "react";
-import { Plus, ArrowDownLeft, ArrowUpRight, Bell, Check, Trash2, X, Building2, Car, GraduationCap, User, Home, CreditCard, ChevronDown, ChevronUp, AlertTriangle, Calendar, Palette } from "lucide-react";
+import { todayISO } from "../../lib/dateUtils";
+import {
+  Plus, ArrowDownLeft, ArrowUpRight, Bell, Check, Trash2, X, Building2, Car,
+  GraduationCap, User, Home, CreditCard, ChevronDown, ChevronUp, AlertTriangle,
+  Calendar, Palette, TrendingUp, TrendingDown, Clock, History, FileText,
+  CheckCircle2, RefreshCw, Landmark, ExternalLink, ShieldCheck, Tag, ArrowRight,
+  Receipt, Percent, Sparkles, SlidersHorizontal, Info
+} from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { inr } from "../types";
-import { Loan, PaymentMode, StructuredLoan, StructuredLoanType, BuilderMilestone, CreditCard as CreditCardData, useStore } from "../../store";
+import {
+  Loan, PaymentMode, StructuredLoan, StructuredLoanType, BuilderMilestone,
+  CreditCard as CreditCardData, EmiRevision, Tx, useStore
+} from "../../store";
 
 const paymentLabel: Record<PaymentMode, string> = { cash: "Cash", upi: "UPI", credit: "Credit", debit: "Debit", other: "Other" };
 
@@ -43,13 +53,37 @@ function annualInterestPaid(emi: number, principal: number, emisPaid: number, te
   return Math.max(0, totalPaid - principalRepaid);
 }
 
+/** Actuals tracked in transaction ledger for a structured loan */
+function getLoanActuals(loan: StructuredLoan, transactions: Tx[]) {
+  const loanTxs = transactions
+    .filter((t) => t.loanId === loan.id && t.type === "expense")
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const totalPaid = loanTxs.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const prepayTxs = loanTxs.filter((t) => t.loanPaymentType === "prepayment");
+  const totalPrepaid = prepayTxs.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const emiTxs = loanTxs.filter((t) => t.loanPaymentType !== "prepayment");
+  const baseOutstanding = outstandingPrincipal(loan.principalAmount, loan.interestRatePA, loan.tenureMonths, loan.emisPaid);
+  const adjustedOutstanding = Math.max(0, baseOutstanding - totalPrepaid);
+  return { loanTxs, totalPaid, prepayTxs, totalPrepaid, emiTxs, adjustedOutstanding };
+}
+
 export function Loans({ onBack }: { onBack: () => void }) {
-  const { loans, addLoan, settleLoan, removeLoan, structuredLoans, addStructuredLoan, updateStructuredLoan, removeStructuredLoan, properties, creditCards, addCreditCard, removeCreditCard } = useStore();
+  const {
+    loans, addLoan, settleLoan, removeLoan, structuredLoans, addStructuredLoan,
+    updateStructuredLoan, removeStructuredLoan, properties, creditCards,
+    addCreditCard, removeCreditCard, transactions, addTransaction
+  } = useStore();
+
   const [tab, setTab] = useState<"structured" | "personal" | "cards">("structured");
   const [openAdd, setOpenAdd] = useState(false);
   const [openPersonal, setOpenPersonal] = useState(false);
   const [openAddCard, setOpenAddCard] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Modal states for loan intelligence
+  const [detailLoanId, setDetailLoanId] = useState<string | null>(null);
+  const [revisionLoanId, setRevisionLoanId] = useState<string | null>(null);
+  const [logEmiLoanId, setLogEmiLoanId] = useState<string | null>(null);
 
   const activePersonal = loans.filter((l) => !l.settled);
   const settledPersonal = loans.filter((l) => l.settled);
@@ -57,10 +91,22 @@ export function Loans({ onBack }: { onBack: () => void }) {
   const owedToYou = activePersonal.filter((l) => l.direction === "lent").reduce((s, l) => s + l.amount, 0);
 
   const totalOutstanding = structuredLoans.filter(l => !l.closed).reduce((s, l) => {
-    return s + outstandingPrincipal(l.principalAmount, l.interestRatePA, l.tenureMonths, l.emisPaid);
+    const { adjustedOutstanding } = getLoanActuals(l, transactions);
+    return s + adjustedOutstanding;
   }, 0);
 
   const totalEmiMonthly = structuredLoans.filter(l => !l.closed).reduce((s, l) => s + l.emiAmount, 0);
+
+  const totalTrackedDebits = useMemo(() => {
+    return transactions
+      .filter((t) => t.type === "expense" && Boolean(t.loanId))
+      .reduce((s, t) => s + Math.abs(t.amount), 0);
+  }, [transactions]);
+
+  // Lookup active loan objects
+  const activeDetailLoan = structuredLoans.find((l) => l.id === detailLoanId) || null;
+  const activeRevisionLoan = structuredLoans.find((l) => l.id === revisionLoanId) || null;
+  const activeLogEmiLoan = structuredLoans.find((l) => l.id === logEmiLoanId) || null;
 
   return (
     <>
@@ -81,6 +127,22 @@ export function Loans({ onBack }: { onBack: () => void }) {
               <div className="text-[11px] text-amber-100 mt-1">across all loans</div>
             </div>
           </div>
+
+          {/* Tracked Ledger Outflow Bar */}
+          {totalTrackedDebits > 0 && (
+            <div className="bg-emerald-50/90 border border-emerald-200/80 rounded-2xl p-3 flex items-center justify-between text-xs text-emerald-950">
+              <div className="flex items-center gap-2">
+                <div className="size-7 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="size-4" />
+                </div>
+                <div>
+                  <div className="font-bold">Total Reconciled Bank Debits</div>
+                  <div className="text-[11px] text-emerald-700">Tracked in expense ledger</div>
+                </div>
+              </div>
+              <div className="font-extrabold text-sm text-emerald-900">{inr(totalTrackedDebits)}</div>
+            </div>
+          )}
 
           {/* Tab Bar */}
           <div className="bg-muted rounded-xl p-1 flex">
@@ -110,13 +172,17 @@ export function Loans({ onBack }: { onBack: () => void }) {
               )}
 
               <div className="space-y-3">
-                {structuredLoans.map(loan => (
+                {structuredLoans.map((loan) => (
                   <StructuredLoanCard
                     key={loan.id}
                     loan={loan}
                     properties={properties}
+                    transactions={transactions}
                     expanded={expandedId === loan.id}
                     onToggle={() => setExpandedId(expandedId === loan.id ? null : loan.id)}
+                    onOpenDetail={() => setDetailLoanId(loan.id)}
+                    onOpenRevision={() => setRevisionLoanId(loan.id)}
+                    onOpenLogEmi={() => setLogEmiLoanId(loan.id)}
                     onPayEmi={() => {
                       const updated: StructuredLoan = {
                         ...loan,
@@ -232,6 +298,7 @@ export function Loans({ onBack }: { onBack: () => void }) {
         </div>
       </Screen>
 
+      {/* Add New Loan Sheet */}
       {openAdd && (
         <AddStructuredLoanSheet
           properties={properties}
@@ -239,16 +306,87 @@ export function Loans({ onBack }: { onBack: () => void }) {
           onSave={async (l) => { await addStructuredLoan(l); setOpenAdd(false); }}
         />
       )}
+
+      {/* Add Personal Loan Sheet */}
       {openPersonal && (
         <AddPersonalLoanSheet
           onClose={() => setOpenPersonal(false)}
           onSave={async (l) => { await addLoan(l); setOpenPersonal(false); }}
         />
       )}
+
+      {/* Add Credit Card Sheet */}
       {openAddCard && (
         <AddCreditCardSheet
           onClose={() => setOpenAddCard(false)}
           onSave={async (c) => { await addCreditCard(c); setOpenAddCard(false); }}
+        />
+      )}
+
+      {/* Comprehensive Loan Detail & Payment History Ledger Modal */}
+      {activeDetailLoan && (
+        <LoanDetailModal
+          loan={activeDetailLoan}
+          properties={properties}
+          transactions={transactions}
+          onClose={() => setDetailLoanId(null)}
+          onOpenRevision={() => setRevisionLoanId(activeDetailLoan.id)}
+          onOpenLogEmi={() => setLogEmiLoanId(activeDetailLoan.id)}
+          onRemove={() => {
+            removeStructuredLoan(activeDetailLoan.id);
+            setDetailLoanId(null);
+          }}
+        />
+      )}
+
+      {/* Floating Rate & EMI Revision Sheet */}
+      {activeRevisionLoan && (
+        <AddEmiRevisionSheet
+          loan={activeRevisionLoan}
+          onClose={() => setRevisionLoanId(null)}
+          onSave={async (rev, newEmi, newRate) => {
+            const history = [...(activeRevisionLoan.emiHistory || []), rev];
+            await updateStructuredLoan({
+              ...activeRevisionLoan,
+              emiAmount: newEmi,
+              interestRatePA: newRate,
+              emiHistory: history,
+            });
+            setRevisionLoanId(null);
+          }}
+        />
+      )}
+
+      {/* Log EMI Auto-Debit / Pre-payment Sheet */}
+      {activeLogEmiLoan && (
+        <LogEmiDebitSheet
+          loan={activeLogEmiLoan}
+          onClose={() => setLogEmiLoanId(null)}
+          onSave={async (txData, isPrepayment, advanceDueDate) => {
+            await addTransaction(txData);
+            if (!isPrepayment) {
+              const updatedEmisPaid = Math.min(activeLogEmiLoan.emisPaid + 1, activeLogEmiLoan.totalEmis);
+              let nextDue = activeLogEmiLoan.nextEmiDueDate;
+              if (advanceDueDate) {
+                const d = new Date(activeLogEmiLoan.nextEmiDueDate || new Date());
+                d.setMonth(d.getMonth() + 1);
+                nextDue = d.toISOString().slice(0, 10);
+              }
+              await updateStructuredLoan({
+                ...activeLogEmiLoan,
+                emisPaid: updatedEmisPaid,
+                outstandingPrincipal: outstandingPrincipal(
+                  activeLogEmiLoan.principalAmount,
+                  activeLogEmiLoan.interestRatePA,
+                  activeLogEmiLoan.tenureMonths,
+                  updatedEmisPaid
+                ),
+                nextEmiDueDate: nextDue,
+                closed: updatedEmisPaid >= activeLogEmiLoan.totalEmis,
+              });
+            }
+            setLogEmiLoanId(null);
+          }}
         />
       )}
     </>
@@ -257,21 +395,25 @@ export function Loans({ onBack }: { onBack: () => void }) {
 
 // ===================== STRUCTURED LOAN CARD =====================
 function StructuredLoanCard({
-  loan, properties, expanded, onToggle, onPayEmi, onRemove
+  loan, properties, transactions, expanded, onToggle, onOpenDetail, onOpenRevision, onOpenLogEmi, onPayEmi, onRemove
 }: {
   loan: StructuredLoan;
   properties: any[];
+  transactions: Tx[];
   expanded: boolean;
   onToggle: () => void;
+  onOpenDetail: () => void;
+  onOpenRevision: () => void;
+  onOpenLogEmi: () => void;
   onPayEmi: () => void;
   onRemove: () => void;
 }) {
   const cfg = loanTypeConfig[loan.loanType];
   const Icon = cfg.icon;
-  const outstanding = outstandingPrincipal(loan.principalAmount, loan.interestRatePA, loan.tenureMonths, loan.emisPaid);
+  const linkedProp = properties.find(p => p.id === loan.linkedPropertyId);
+  const { loanTxs, totalPaid, adjustedOutstanding } = getLoanActuals(loan, transactions);
   const progress = ((loan.emisPaid / loan.totalEmis) * 100);
   const interestFY = annualInterestPaid(loan.emiAmount, loan.principalAmount, loan.emisPaid, loan.tenureMonths, loan.interestRatePA);
-  const linkedProp = properties.find(p => p.id === loan.linkedPropertyId);
   const emisLeft = loan.totalEmis - loan.emisPaid;
   const nextDue = loan.nextEmiDueDate;
   const daysUntilEmi = Math.ceil((new Date(nextDue).getTime() - Date.now()) / 86400000);
@@ -284,13 +426,19 @@ function StructuredLoanCard({
           <Icon className="size-5" style={{ color: cfg.color }} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="font-bold text-sm text-slate-900">{loan.lenderName}</div>
-          <div className="text-xs text-muted-foreground">
-            {cfg.label}{linkedProp ? ` · ${linkedProp.name}` : ""} · <span className="font-semibold text-slate-700">{loan.interestRatePA}% p.a.</span>
+          <div className="font-bold text-sm text-slate-900 truncate">{loan.lenderName}</div>
+          <div className="text-xs text-muted-foreground truncate">
+            {cfg.label}{linkedProp ? ` · 🏠 ${linkedProp.name}` : ""} · <span className="font-semibold text-slate-700">{loan.interestRatePA}% p.a.</span>
           </div>
+          {loanTxs.length > 0 && (
+            <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60 mt-1">
+              <CheckCircle2 className="size-3 shrink-0" />
+              <span>{loanTxs.length} debits tracked ({inr(totalPaid)})</span>
+            </div>
+          )}
         </div>
-        <div className="text-right mr-2">
-          <div className="font-bold text-sm text-slate-900">{inr(outstanding)}</div>
+        <div className="text-right mr-1 shrink-0">
+          <div className="font-bold text-sm text-slate-900">{inr(adjustedOutstanding)}</div>
           <div className="text-[11px] text-muted-foreground">{emisLeft} EMIs left</div>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground flex-shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground flex-shrink-0" />}
@@ -299,8 +447,8 @@ function StructuredLoanCard({
       {/* Progress bar */}
       <div className="px-4 pb-3">
         <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
-          <span>{loan.emisPaid} EMIs paid</span>
-          <span>{progress.toFixed(0)}% complete</span>
+          <span>{loan.emisPaid} of {loan.totalEmis} EMIs ({loan.tenureMonths} mo)</span>
+          <span>{progress.toFixed(0)}% amortized</span>
         </div>
         <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: cfg.color }} />
@@ -309,9 +457,17 @@ function StructuredLoanCard({
 
       {/* Next EMI alert */}
       {isUrgent && !loan.closed && (
-        <div className="mx-4 mb-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-center gap-2">
-          <AlertTriangle className="size-3.5 text-amber-600 flex-shrink-0" />
-          <span className="text-xs font-semibold text-amber-800">EMI of {inr(loan.emiAmount)} due in {daysUntilEmi} day{daysUntilEmi !== 1 ? "s" : ""}</span>
+        <div className="mx-4 mb-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-3.5 text-amber-600 flex-shrink-0" />
+            <span className="text-xs font-semibold text-amber-800">EMI {inr(loan.emiAmount)} due in {daysUntilEmi} day{daysUntilEmi !== 1 ? "s" : ""}</span>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenLogEmi(); }}
+            className="text-[11px] bg-amber-600 text-white font-bold px-2 py-0.5 rounded-md hover:bg-amber-700 transition"
+          >
+            Log Debit
+          </button>
         </div>
       )}
 
@@ -320,50 +476,53 @@ function StructuredLoanCard({
         <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
           {/* Amortization summary */}
           <div className="grid grid-cols-2 gap-2">
-            <StatBox label="EMI Amount" value={inr(loan.emiAmount)} />
-            <StatBox label="Interest Rate" value={`${loan.interestRatePA}% p.a.`} />
-            <StatBox label="Principal" value={inr(loan.principalAmount)} />
-            <StatBox label="Outstanding" value={inr(outstanding)} color="rose" />
+            <StatBox label="Current EMI" value={inr(loan.emiAmount)} note={`Due on ${nextDue}`} />
+            <StatBox label="Interest Rate" value={`${loan.interestRatePA}% p.a.`} note={loan.emiHistory && loan.emiHistory.length > 1 ? `${loan.emiHistory.length} revisions logged` : undefined} />
+            <StatBox label="Principal Sanctioned" value={inr(loan.principalAmount)} />
+            <StatBox label="Current Outstanding" value={inr(adjustedOutstanding)} color="rose" />
             <StatBox label="Total Interest" value={inr(totalInterest(loan.emiAmount, loan.tenureMonths, loan.principalAmount))} />
-            <StatBox label="FY Interest (u/s 24b)" value={inr(interestFY)} color="green" note="ITR deduction" />
+            <StatBox label="Annual Interest (u/s 24b)" value={inr(interestFY)} color="green" note="ITR Eligible" />
           </div>
 
-          {/* Next EMI */}
-          <div className="flex items-center gap-2 bg-slate-50 rounded-xl p-3">
-            <Calendar className="size-4 text-slate-500" />
-            <div>
-              <div className="text-xs font-bold text-slate-800">Next EMI Date</div>
-              <div className="text-[11px] text-muted-foreground">{nextDue} — {inr(loan.emiAmount)}</div>
-            </div>
-          </div>
-
-          {/* Builder Milestones */}
-          {loan.builderMilestones && loan.builderMilestones.length > 0 && (
-            <div>
-              <div className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Builder Milestones</div>
-              <div className="space-y-1.5">
-                {loan.builderMilestones.map((m, i) => (
-                  <div key={i} className={`flex justify-between items-center p-2.5 rounded-xl text-sm ${m.paid ? "bg-emerald-50 text-emerald-900" : "bg-rose-50 text-rose-900"}`}>
-                    <span className="font-semibold">{m.stage}</span>
-                    <span className="font-bold">{inr(m.amount)} {m.paid ? "✓" : `· ${m.dueDate}`}</span>
-                  </div>
-                ))}
+          {/* Linked Property Banner if Home Loan */}
+          {linkedProp && (
+            <div className="flex items-center gap-2.5 bg-blue-50/80 border border-blue-200/60 rounded-xl p-3 text-xs">
+              <Home className="size-4 text-blue-700 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <span className="font-bold text-blue-950">Linked Property: {linkedProp.name}</span>
+                <div className="text-[11px] text-blue-700">Valuation: {inr(linkedProp.currentValuation || linkedProp.purchasePrice)}</div>
               </div>
             </div>
           )}
 
-          {loan.notes && <div className="text-xs text-muted-foreground bg-muted rounded-xl p-2.5">{loan.notes}</div>}
+          {/* Quick Action Controls */}
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button
+              onClick={onOpenDetail}
+              className="py-2.5 px-3 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
+            >
+              <FileText className="size-3.5" /> Full Ledger & Revisions
+            </button>
+            <button
+              onClick={onOpenLogEmi}
+              className="py-2.5 px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
+            >
+              <Check className="size-3.5" /> Log Auto-Debit
+            </button>
+          </div>
 
-          <div className="flex gap-2 pt-1">
-            {!loan.closed && (
-              <button
-                onClick={onPayEmi}
-                className="flex-1 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center gap-1.5"
-              >
-                <Check className="size-3.5" /> Mark EMI Paid
-              </button>
-            )}
-            <button onClick={onRemove} className="size-10 rounded-xl bg-muted flex items-center justify-center text-muted-foreground flex-shrink-0">
+          <div className="flex gap-2">
+            <button
+              onClick={onOpenRevision}
+              className="flex-1 py-2 rounded-xl bg-muted/80 hover:bg-muted text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+            >
+              <RefreshCw className="size-3 text-slate-500" /> Record Rate / EMI Change
+            </button>
+            <button
+              onClick={onRemove}
+              className="size-9 rounded-xl bg-rose-50 text-rose-600 hover:bg-rose-100 flex items-center justify-center transition shrink-0"
+              title="Delete loan"
+            >
               <Trash2 className="size-3.5" />
             </button>
           </div>
@@ -379,6 +538,596 @@ function StatBox({ label, value, color, note }: { label: string; value: string; 
       <div className="text-[10px] text-muted-foreground font-semibold">{label}</div>
       <div className={`text-sm font-bold mt-0.5 ${color === "rose" ? "text-rose-600" : color === "green" ? "text-emerald-700" : "text-slate-900"}`}>{value}</div>
       {note && <div className="text-[9px] text-emerald-600 font-semibold mt-0.5">{note}</div>}
+    </div>
+  );
+}
+
+// ===================== FULL LOAN DETAIL & LEDGER MODAL =====================
+function LoanDetailModal({
+  loan, properties, transactions, onClose, onOpenRevision, onOpenLogEmi, onRemove
+}: {
+  loan: StructuredLoan;
+  properties: any[];
+  transactions: Tx[];
+  onClose: () => void;
+  onOpenRevision: () => void;
+  onOpenLogEmi: () => void;
+  onRemove: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"ledger" | "revisions" | "tax">("ledger");
+  const cfg = loanTypeConfig[loan.loanType];
+  const Icon = cfg.icon;
+  const linkedProp = properties.find((p) => p.id === loan.linkedPropertyId);
+  const { loanTxs, totalPaid, prepayTxs, totalPrepaid, adjustedOutstanding } = getLoanActuals(loan, transactions);
+  const interestFY = annualInterestPaid(loan.emiAmount, loan.principalAmount, loan.emisPaid, loan.tenureMonths, loan.interestRatePA);
+  const principalFY = Math.max(0, Math.min(150000, (loan.emiAmount * 12) - interestFY));
+  const emisLeft = loan.totalEmis - loan.emisPaid;
+  const progress = ((loan.emisPaid / loan.totalEmis) * 100);
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-h-[94%] overflow-y-auto bg-card rounded-t-3xl p-5 pb-10 animate-in slide-in-from-bottom duration-200 space-y-4 shadow-2xl"
+      >
+        {/* Header */}
+        <div className="flex justify-between items-start">
+          <div className="flex items-center gap-3">
+            <div className="size-11 rounded-2xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${cfg.color}18` }}>
+              <Icon className="size-6" style={{ color: cfg.color }} />
+            </div>
+            <div>
+              <div className="font-display text-lg font-bold text-slate-900">{loan.lenderName}</div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
+                <span className="font-semibold" style={{ color: cfg.color }}>{cfg.label}</span>
+                {linkedProp && (
+                  <>
+                    <span>·</span>
+                    <span className="font-bold text-slate-700 flex items-center gap-1">
+                      <Home className="size-3 text-blue-600" /> {linkedProp.name}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center hover:bg-muted/80">
+            <X className="size-4 text-slate-600" />
+          </button>
+        </div>
+
+        {/* 4 Financial KPI Cards */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-3">
+            <div className="text-[10px] text-muted-foreground font-semibold">Principal Sanctioned</div>
+            <div className="font-display text-base font-black text-slate-900 mt-0.5">{inr(loan.principalAmount)}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">{loan.tenureMonths} mo tenure</div>
+          </div>
+          <div className="bg-rose-50 border border-rose-200/60 rounded-2xl p-3">
+            <div className="text-[10px] text-rose-700 font-semibold">Current Outstanding</div>
+            <div className="font-display text-base font-black text-rose-900 mt-0.5">{inr(adjustedOutstanding)}</div>
+            <div className="text-[10px] text-rose-600 mt-0.5">{emisLeft} EMIs remaining</div>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200/60 rounded-2xl p-3">
+            <div className="text-[10px] text-emerald-700 font-semibold">Tracked Repayments</div>
+            <div className="font-display text-base font-black text-emerald-900 mt-0.5">{inr(totalPaid)}</div>
+            <div className="text-[10px] text-emerald-600 mt-0.5">{loanTxs.length} debits reconciled</div>
+          </div>
+          <div className="bg-blue-50 border border-blue-200/60 rounded-2xl p-3">
+            <div className="text-[10px] text-blue-700 font-semibold">Active Monthly EMI</div>
+            <div className="font-display text-base font-black text-blue-900 mt-0.5">{inr(loan.emiAmount)}</div>
+            <div className="text-[10px] text-blue-700 mt-0.5">{loan.interestRatePA}% p.a. floating</div>
+          </div>
+        </div>
+
+        {/* Amortization Progress */}
+        <div className="bg-muted/40 rounded-2xl p-3.5 space-y-2 border border-border/50">
+          <div className="flex justify-between text-xs items-center">
+            <span className="font-semibold text-slate-800">Repayment Progress</span>
+            <span className="font-bold text-primary">{progress.toFixed(0)}% completed</span>
+          </div>
+          <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, backgroundColor: cfg.color }} />
+          </div>
+          <div className="flex justify-between text-[11px] text-muted-foreground pt-0.5">
+            <span>{loan.emisPaid} EMIs Paid</span>
+            <span>Next Due: {loan.nextEmiDueDate}</span>
+          </div>
+        </div>
+
+        {/* Quick Action Buttons */}
+        <div className="flex gap-2">
+          <button
+            onClick={onOpenLogEmi}
+            className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
+          >
+            <Check className="size-4" /> Log EMI Auto-Debit
+          </button>
+          <button
+            onClick={onOpenRevision}
+            className="py-2.5 px-3 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
+          >
+            <RefreshCw className="size-3.5" /> Rate Revision
+          </button>
+        </div>
+
+        {/* Segmented View Subtabs */}
+        <div className="bg-muted rounded-xl p-1 flex">
+          <button
+            onClick={() => setActiveTab("ledger")}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              activeTab === "ledger" ? "bg-card text-slate-900 shadow-sm" : "text-muted-foreground"
+            }`}
+          >
+            <Receipt className="size-3.5" /> Payment Ledger ({loanTxs.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("revisions")}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              activeTab === "revisions" ? "bg-card text-slate-900 shadow-sm" : "text-muted-foreground"
+            }`}
+          >
+            <History className="size-3.5" /> Rate History ({loan.emiHistory?.length || 0})
+          </button>
+          <button
+            onClick={() => setActiveTab("tax")}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              activeTab === "tax" ? "bg-card text-slate-900 shadow-sm" : "text-muted-foreground"
+            }`}
+          >
+            <ShieldCheck className="size-3.5" /> ITR Tax 80C/24b
+          </button>
+        </div>
+
+        {/* ── SUBTAB 1: PAYMENT HISTORY LEDGER ── */}
+        {activeTab === "ledger" && (
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+              <span>All debits linked to this loan</span>
+              <span className="font-bold text-slate-700">{inr(totalPaid)} total</span>
+            </div>
+
+            {loanTxs.length === 0 ? (
+              <div className="text-center py-8 bg-muted/30 border border-dashed border-border rounded-2xl p-4 space-y-2">
+                <Receipt className="size-8 mx-auto text-muted-foreground/50" />
+                <div className="text-xs font-bold text-slate-700">No bank debits tracked yet</div>
+                <div className="text-[11px] text-muted-foreground max-w-xs mx-auto">
+                  When your monthly EMI auto-debits from your bank account, log it under Category &quot;EMI&quot; or tap below.
+                </div>
+                <button
+                  onClick={onOpenLogEmi}
+                  className="mt-2 text-xs font-bold text-primary bg-primary/10 hover:bg-primary/20 px-3 py-1.5 rounded-xl transition"
+                >
+                  Log First EMI Debit
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {loanTxs.map((t) => (
+                  <div
+                    key={t.id}
+                    className="bg-card border border-border/70 rounded-xl p-3 flex items-center justify-between shadow-2xs"
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-slate-900 truncate">{t.merchant || t.title}</span>
+                        {t.loanPaymentType === "prepayment" ? (
+                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">PREPAY</span>
+                        ) : (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">EMI</span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                        <span>{t.date}</span>
+                        <span>·</span>
+                        <span className="capitalize">{t.payments?.[0]?.mode || "Bank Debit"}</span>
+                        {t.notes && <span className="truncate italic max-w-[120px]">({t.notes})</span>}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-extrabold text-slate-900">-{inr(t.amount)}</div>
+                      <div className="text-[9px] font-medium text-emerald-600 flex items-center gap-0.5 justify-end">
+                        <Check className="size-2.5" /> Reconciled
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── SUBTAB 2: FLOATING RATE & EMI REVISION TIMELINE ── */}
+        {activeTab === "revisions" && (
+          <div className="space-y-3">
+            <div className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-3 text-xs text-amber-950 space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <Info className="size-3.5 text-amber-600" /> Floating Rate Tracking
+              </div>
+              <div className="text-[11px] text-amber-900/90 leading-relaxed">
+                Indian home loans typically have floating interest rates that fluctuate when RBI changes the repo rate. LiveSync tracks every rate revision without distorting your past ledger.
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-800">Revision History</span>
+              <button
+                onClick={onOpenRevision}
+                className="text-primary font-bold text-[11px] flex items-center gap-1 hover:underline"
+              >
+                <Plus className="size-3" /> Add Revision
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {loan.emiHistory && loan.emiHistory.length > 0 ? (
+                loan.emiHistory.map((rev, idx) => (
+                  <div key={rev.id || idx} className="bg-card border border-border/70 rounded-xl p-3 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="size-2 rounded-full bg-primary" />
+                        <span className="text-xs font-bold text-slate-900">{inr(rev.emiAmount)} / mo</span>
+                        {rev.interestRatePA && (
+                          <span className="text-[11px] font-semibold text-slate-600">@ {rev.interestRatePA}% p.a.</span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground font-medium">{rev.effectiveDate}</span>
+                    </div>
+                    {rev.reason && (
+                      <div className="text-[11px] text-slate-600 pl-4">{rev.reason}</div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="bg-muted/40 rounded-xl p-3 text-xs text-muted-foreground text-center">
+                  Started at {loan.interestRatePA}% p.a. with {inr(loan.emiAmount)}/mo on {loan.disbursementDate}. No rate revisions recorded yet.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── SUBTAB 3: INDIAN TAX DEDUCTION INTELLIGENCE ── */}
+        {activeTab === "tax" && (
+          <div className="space-y-3">
+            <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200/70 rounded-2xl p-3.5 space-y-2">
+              <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs">
+                <ShieldCheck className="size-4 text-indigo-700" />
+                <span>Indian Income Tax Act Benefits (FY 2025-26)</span>
+              </div>
+              <div className="text-[11px] text-indigo-950/80 leading-relaxed">
+                As a home borrower, you are eligible for significant income tax savings across Section 24(b) and Section 80C.
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {/* Section 24b */}
+              <div className="bg-card border border-border rounded-xl p-3 space-y-1">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-bold text-slate-900">Section 24(b) · Interest Deduction</span>
+                  <span className="text-emerald-700 font-extrabold">{inr(Math.min(200000, interestFY))}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Up to ₹2,00,000 deduction on annual home loan interest paid for self-occupied properties. Estimated FY interest: {inr(interestFY)}.
+                </div>
+              </div>
+
+              {/* Section 80C */}
+              <div className="bg-card border border-border rounded-xl p-3 space-y-1">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-bold text-slate-900">Section 80C · Principal Repayment</span>
+                  <span className="text-emerald-700 font-extrabold">{inr(principalFY)}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Up to ₹1,50,000 deduction on principal repayment under the overall Section 80C basket.
+                </div>
+              </div>
+
+              {/* Potential tax savings calculation */}
+              <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-xl p-3 flex items-center justify-between text-xs">
+                <div>
+                  <div className="font-bold text-emerald-950">Estimated Annual Tax Savings</div>
+                  <div className="text-[10px] text-emerald-700">Calculated at 30% tax bracket</div>
+                </div>
+                <div className="text-sm font-black text-emerald-900">
+                  ~{inr(Math.round((Math.min(200000, interestFY) + principalFY) * 0.312))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Footer info & delete button */}
+        <div className="flex justify-between items-center pt-2 text-xs border-t border-border/50">
+          <span className="text-muted-foreground text-[11px]">Disbursed on {loan.disbursementDate}</span>
+          <button
+            onClick={onRemove}
+            className="text-rose-600 hover:text-rose-700 font-bold text-xs flex items-center gap-1"
+          >
+            <Trash2 className="size-3.5" /> Remove Loan
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===================== ADD EMI REVISION SHEET =====================
+function AddEmiRevisionSheet({
+  loan, onClose, onSave
+}: {
+  loan: StructuredLoan;
+  onClose: () => void;
+  onSave: (rev: EmiRevision, newEmi: number, newRate: number) => Promise<void>;
+}) {
+  const [emiAmount, setEmiAmount] = useState(String(loan.emiAmount));
+  const [interestRatePA, setInterestRatePA] = useState(String(loan.interestRatePA));
+  const [effectiveDate, setEffectiveDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const REASONS = [
+    "RBI Repo Rate Hike (+25 bps)",
+    "RBI Repo Rate Cut (-25 bps)",
+    "Tenure Adjustment",
+    "Pre-payment EMI Reset",
+    "Bank MCLR Spread Update",
+  ];
+
+  const submit = async () => {
+    const e = Number(emiAmount);
+    const r = Number(interestRatePA);
+    if (!e || saving) return;
+    setSaving(true);
+    try {
+      const revision: EmiRevision = {
+        id: crypto.randomUUID(),
+        effectiveDate,
+        emiAmount: e,
+        interestRatePA: r,
+        reason: reason.trim() || "Rate revision",
+        createdAt: new Date().toISOString(),
+      };
+      await onSave(revision, e, r);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-h-[92%] overflow-y-auto bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200 space-y-4"
+      >
+        <div className="flex justify-between items-center">
+          <div>
+            <div className="font-display text-lg font-bold">Record Rate / EMI Revision</div>
+            <div className="text-xs text-muted-foreground">{loan.lenderName} floating rate adjustment</div>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Label label="New Monthly EMI (₹)">
+            <input
+              inputMode="decimal"
+              value={emiAmount}
+              onChange={(e) => setEmiAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none font-bold"
+            />
+          </Label>
+          <Label label="New Interest Rate (% p.a.)">
+            <input
+              inputMode="decimal"
+              value={interestRatePA}
+              onChange={(e) => setInterestRatePA(e.target.value)}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none font-bold"
+            />
+          </Label>
+        </div>
+
+        <Label label="Effective Date">
+          <input
+            type="date"
+            value={effectiveDate}
+            onChange={(e) => setEffectiveDate(e.target.value)}
+            className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          />
+        </Label>
+
+        <div>
+          <div className="text-xs text-muted-foreground font-semibold mb-1.5">Quick Reasons</div>
+          <div className="flex flex-wrap gap-1.5">
+            {REASONS.map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setReason(r)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition ${
+                  reason === r ? "bg-primary text-white border-primary" : "bg-muted text-slate-700 border-border"
+                }`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Label label="Custom Note / Reason">
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Repo rate increased by 25 bps by RBI"
+            className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          />
+        </Label>
+
+        <button
+          onClick={submit}
+          disabled={!emiAmount || saving}
+          className="w-full bg-primary text-primary-foreground font-bold rounded-xl py-3.5 text-sm shadow-sm active:scale-[0.98] transition disabled:opacity-50"
+        >
+          {saving ? "Saving Revision…" : "Save Rate Revision"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ===================== LOG EMI DEBIT SHEET =====================
+function LogEmiDebitSheet({
+  loan, onClose, onSave
+}: {
+  loan: StructuredLoan;
+  onClose: () => void;
+  onSave: (tx: Omit<Tx, "id">, isPrepayment: boolean, advanceDueDate: boolean) => Promise<void>;
+}) {
+  const [paymentType, setPaymentType] = useState<"emi" | "prepayment">("emi");
+  const [amount, setAmount] = useState(String(loan.emiAmount));
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [mode, setMode] = useState<PaymentMode>("debit");
+  const [advanceDueDate, setAdvanceDueDate] = useState(true);
+  const [notes, setNotes] = useState(`Auto-debited for ${loan.lenderName}`);
+  const [saving, setSaving] = useState(false);
+
+  const isPrepay = paymentType === "prepayment";
+
+  const submit = async () => {
+    const amt = Number(amount);
+    if (!amt || saving) return;
+    setSaving(true);
+    try {
+      await onSave(
+        {
+          date,
+          title: `${loan.lenderName} ${isPrepay ? "Pre-payment" : "EMI"}`,
+          merchant: loan.lenderName,
+          amount: -Math.abs(amt),
+          type: "expense",
+          category: "EMI",
+          payments: [{ mode, amount: Math.abs(amt) }],
+          notes: notes ? notes.trim() : undefined,
+          loanId: loan.id,
+          loanPaymentType: paymentType,
+        },
+        isPrepay,
+        advanceDueDate
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-h-[92%] overflow-y-auto bg-card rounded-t-3xl p-5 pb-8 animate-in slide-in-from-bottom duration-200 space-y-4"
+      >
+        <div className="flex justify-between items-center">
+          <div>
+            <div className="font-display text-lg font-bold">Log Loan Bank Debit</div>
+            <div className="text-xs text-muted-foreground">{loan.lenderName}</div>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Payment Type toggle */}
+        <div className="bg-muted rounded-xl p-1 flex">
+          <button
+            onClick={() => {
+              setPaymentType("emi");
+              setAmount(String(loan.emiAmount));
+            }}
+            className={`flex-1 py-2 rounded-lg text-xs font-bold transition ${
+              paymentType === "emi" ? "bg-card shadow-sm text-slate-900" : "text-muted-foreground"
+            }`}
+          >
+            Regular EMI ({inr(loan.emiAmount)})
+          </button>
+          <button
+            onClick={() => {
+              setPaymentType("prepayment");
+              setAmount("");
+            }}
+            className={`flex-1 py-2 rounded-lg text-xs font-bold transition ${
+              paymentType === "prepayment" ? "bg-card shadow-sm text-slate-900" : "text-muted-foreground"
+            }`}
+          >
+            Part Pre-payment
+          </button>
+        </div>
+
+        <Label label="Debit Amount (₹)">
+          <input
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+            placeholder={isPrepay ? "Enter lump-sum amount (e.g. 100000)" : String(loan.emiAmount)}
+            className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none font-bold"
+          />
+        </Label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Label label="Debit Date">
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+            />
+          </Label>
+          <Label label="Payment Mode">
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as PaymentMode)}
+              className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+            >
+              <option value="debit">NetBanking / Auto-Debit</option>
+              <option value="upi">UPI</option>
+              <option value="cash">Cash</option>
+              <option value="other">Other</option>
+            </select>
+          </Label>
+        </div>
+
+        {!isPrepay && (
+          <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700 bg-muted/40 p-2.5 rounded-xl border border-border/50">
+            <input
+              type="checkbox"
+              checked={advanceDueDate}
+              onChange={(e) => setAdvanceDueDate(e.target.checked)}
+              className="rounded text-primary"
+            />
+            <span>Advance next EMI due date by 1 month and increment paid count</span>
+          </label>
+        )}
+
+        <Label label="Notes (optional)">
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. Auto-debited from HDFC Salary A/c"
+            className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          />
+        </Label>
+
+        <button
+          onClick={submit}
+          disabled={!amount || saving}
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl py-3.5 text-sm shadow-sm active:scale-[0.98] transition disabled:opacity-50"
+        >
+          {saving ? "Logging Debit…" : isPrepay ? "Log Part Pre-payment" : `Log EMI Debit (${inr(Number(amount) || loan.emiAmount)})`}
+        </button>
+      </div>
     </div>
   );
 }
@@ -431,6 +1180,16 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
         totalEmis: t,
         isRegistrationLoan: loanType === "property_registration",
         builderMilestones: milestones.length > 0 ? milestones : undefined,
+        emiHistory: [
+          {
+            id: crypto.randomUUID(),
+            effectiveDate: disbursementDate,
+            emiAmount: emi,
+            interestRatePA: r,
+            reason: "Initial loan disbursement",
+            createdAt: new Date().toISOString(),
+          },
+        ],
         notes: notes ? notes.trim() : undefined,
         closed: false,
         createdAt: new Date().toISOString(),
@@ -644,7 +1403,7 @@ function AddPersonalLoanSheet({ onClose, onSave }: { onClose: () => void; onSave
     if (!person.trim() || !amount || saving) return;
     setSaving(true);
     try {
-      await onSave({ direction, person: person.trim(), amount: Number(amount), mode, takenOn: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }), repayBy, notes: notes ? notes.trim() : undefined });
+      await onSave({ direction, person: person.trim(), amount: Number(amount), mode, takenOn: todayISO(), repayBy, notes: notes ? notes.trim() : undefined });
     } finally {
       setSaving(false);
     }

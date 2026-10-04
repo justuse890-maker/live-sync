@@ -150,7 +150,7 @@ export function Security({ onBack }: { onBack: () => void }) {
               <div className="text-sm" style={{ fontWeight: 700 }}>Cloud security</div>
             </div>
             <p className="text-xs text-white/80 mt-2 leading-relaxed">
-              The app uses authenticated API access and encrypts supported sensitive fields before upload. Cloud-provider protections and network encryption are important layers, but no service can guarantee absolute security.
+              Your financial data is stored only on this phone and is not uploaded. Sign-in uses a secure, authenticated connection, but no service can guarantee absolute security.
             </p>
           </div>
 
@@ -279,15 +279,10 @@ function CountrySection() {
     }
     setWorking(true); setErr(null);
     try {
-      const { data } = await supabase().auth.getSession();
-      const token = data.session?.access_token ?? publicAnonKey;
-      const res = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-a3fe149f/me/switch-country`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ country: pending }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `Switch failed: ${res.status}`);
+      // Country is a device-local preference; existing entries are kept.
+      const items = await api.list<any>("settings");
+      const existing = items.find((x: any) => x.id === "preferences") || { id: "preferences" };
+      await api.create("settings", { ...existing, id: "preferences", country: pending });
       await refresh();
       setPending(null);
       setTyped("");
@@ -338,7 +333,7 @@ function CountrySection() {
               <AlertTriangle className="size-4" /> Switch to {TAX_PACKS[pending].name}?
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed mb-3">
-              <span style={{ fontWeight: 600 }} className="text-foreground">Cloud-synced data will be cleared</span> to keep your books consistent with {TAX_PACKS[pending].name}'s tax year and currency. Data stored only on this device is unaffected — it's like opening a fresh book.
+              Currency, tax slabs and tax-year dates will switch to <span style={{ fontWeight: 600 }} className="text-foreground">{TAX_PACKS[pending].name}</span>. Your existing entries stay on this phone unchanged.
             </p>
             <input
               value={typed}

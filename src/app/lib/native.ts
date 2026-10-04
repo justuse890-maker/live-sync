@@ -157,11 +157,11 @@ export async function initStatusBar() {
     // handles that layer. This call covers older Android versions.
     if (getPlatform() === 'android') {
       await StatusBar.setOverlaysWebView({ overlay: false });
-      await StatusBar.setBackgroundColor({ color: '#0f172a' });
+      await StatusBar.setBackgroundColor({ color: '#F7F8FA' });
     }
 
-    // Light icons on the dark status bar (works on both platforms).
-    await StatusBar.setStyle({ style: Style.Dark });
+    // Dark icons on the app's light system surface.
+    await StatusBar.setStyle({ style: Style.Light });
   } catch (err) {
     console.warn('StatusBar init failed:', err);
   }
@@ -179,17 +179,15 @@ export async function hideSplash() {
 }
 
 // ─── Hardware Back Button ────────────────────────────────────────────────────
-export async function initBackButton(onBack: () => void) {
+export async function initBackButton(onBack: () => void): Promise<(() => Promise<void>) | undefined> {
   if (!isNative()) return;
   try {
     const { App } = await import('@capacitor/app');
-    App.addListener('backButton', ({ canGoBack }) => {
-      if (canGoBack) {
-        window.history.back();
-      } else {
-        onBack(); // show "press again to exit" toast or call App.exitApp()
-      }
+    const handle = await App.addListener('backButton', () => {
+      // The React shell decides whether to close an overlay, navigate, or exit.
+      onBack();
     });
+    return () => handle.remove();
   } catch (err) {
     console.warn('Back button init failed:', err);
   }

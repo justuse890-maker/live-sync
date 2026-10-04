@@ -1,0 +1,10 @@
+On-device OCR components bundled with LiveSync AI (all free for commercial use):
+
+- tesseract.js 7.0.0 (worker.min.js) — Apache License 2.0 — https://github.com/naptha/tesseract.js
+- tesseract.js-core 7.0.0 (core/*.wasm.js) — Apache License 2.0 — https://github.com/naptha/tesseract.js-core
+  (WebAssembly build of Tesseract OCR, Apache License 2.0 — https://github.com/tesseract-ocr/tesseract)
+- Trained language data eng / hin (lang/*.traineddata.gz, 4.0.0_best_int) from
+  @tesseract.js-data/eng and @tesseract.js-data/hin (MIT), derived from
+  https://github.com/tesseract-ocr/tessdata (Apache License 2.0).
+
+No image or text is sent to any server: recognition runs entirely on the device.

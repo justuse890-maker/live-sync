@@ -35,7 +35,7 @@ const CHAPTERS = [
   {
     title: "Every rupee, connected.",
     body: "Bank accounts, credit cards, UPI, investments, insurance, gold, property — all in one honest view. No more guessing games.",
-    highlight: "23 connected accounts",
+    highlight: "All accounts in one place",
     icon: CreditCard,
     color: "#0066FF",
   },
@@ -49,25 +49,10 @@ const CHAPTERS = [
   {
     title: "Goals that move.",
     body: "Emergency fund. Vacation. House down payment. We bucket your money, track progress, and nudge you forward.",
-    highlight: "3 active goals",
+    highlight: "Visual milestone tracking",
     icon: TrendingUp,
     color: "#10B981",
   },
-  {
-    title: "Your data stays yours.",
-    body: "Bank-grade encryption. No data selling. No ads. No third-party nonsense. We built this for our own families first.",
-    highlight: "Zero data breach since 2024",
-    icon: Shield,
-    color: "#F59E0B",
-  },
-];
-
-// ── Social proof strip ───────────────────────────────────────────
-const PROOF = [
-  "Used in 48 countries",
-  "4.8★ on Play Store",
-  "No credit card needed",
-  "Free forever plan",
 ];
 
 // ─────────────────────────────────────────────────────────────────
@@ -77,11 +62,10 @@ export function Landing() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState(isInvestorDemo ? "investor@livesync.app" : "");
   const [password, setPassword] = useState("");
+  const [agreeTerms, setAgreeTerms] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [agreeTerms, setAgreeTerms] = useState(false);
-  const [showForm, setShowForm] = useState(false);
 
   const canSubmit = mode === "signup"
     ? !!email && !!password && agreeTerms
@@ -100,7 +84,7 @@ export function Landing() {
         await api.signin(email, password);
         setSuccess("Signed in!");
       }
-      setTimeout(() => navigate("/", { replace: true }), 800);
+      setTimeout(() => navigate("/", { replace: true }), 500);
     } catch (e: any) {
       setErr(e.message || "Something went wrong");
     } finally {
@@ -109,10 +93,7 @@ export function Landing() {
   };
 
   const scrollToForm = () => {
-    setShowForm(true);
-    setTimeout(() => {
-      document.getElementById("landing-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 100);
+    document.getElementById("landing-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   return (
@@ -138,23 +119,9 @@ export function Landing() {
           className="w-full max-w-xs mx-auto bg-primary text-primary-foreground rounded-2xl py-4 text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform shadow-lg shadow-primary/25"
           style={{ fontWeight: 700 }}
         >
-          Begin your journey
+          Sign in to LiveSync
           <ArrowRight className="size-4" />
         </button>
-
-        <p className="mt-3 text-xs text-muted-foreground">No credit card. Free plan available.</p>
-      </section>
-
-      {/* ── Proof strip ────────────────────────────────────────── */}
-      <section className="px-5 pb-8">
-        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-          {PROOF.map((p) => (
-            <div key={p} className="flex items-center gap-1.5 bg-card border border-border rounded-full px-3 py-1.5 shrink-0">
-              <Check className="size-3 text-emerald-500" strokeWidth={3} />
-              <span className="text-xs text-muted-foreground whitespace-nowrap" style={{ fontWeight: 600 }}>{p}</span>
-            </div>
-          ))}
-        </div>
       </section>
 
       {/* ── Story: The Problem ──────────────────────────────────── */}
@@ -219,16 +186,50 @@ export function Landing() {
           <div className="flex items-start gap-3">
             <Shield className="size-4 text-primary mt-0.5 shrink-0" />
             <p className="text-xs text-muted-foreground leading-relaxed">
-              We never sell your data. All connections are read-only and encrypted. AI processes your data ephemerally — nothing is stored on our servers.
-              <a href="#/privacy-policy" className="text-primary ml-1 underline" style={{ fontWeight: 600 }}>Review Privacy Policy</a>
+              We never sell your data. All connections are read-only and encrypted. AI processes your data ephemerally — nothing is stored on our servers.{" "}
+              <button
+                type="button"
+                onClick={() => navigate("/privacy-policy")}
+                className="text-primary underline inline font-semibold hover:opacity-80 transition cursor-pointer"
+              >
+                Review Privacy Policy
+              </button>
             </p>
           </div>
         </Card>
       </section>
 
-      {/* ── Auth Form ───────────────────────────────────────────── */}
+      {/* ── Auth Form (Sign In & Sign Up) ─────────────────────────── */}
       <section id="landing-form" className="px-5 pb-10">
-        <Card className="p-5">
+        <Card className="p-5 shadow-sm border-border/80">
+          {/* Segmented Control / Tab Switcher to move vice-versa */}
+          {!isInvestorDemo && (
+            <div className="grid grid-cols-2 p-1 bg-muted/70 rounded-xl mb-5 border border-border/50">
+              <button
+                type="button"
+                onClick={() => { setMode("signin"); setErr(null); setSuccess(null); }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  mode === "signin"
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMode("signup"); setErr(null); setSuccess(null); }}
+                className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                  mode === "signup"
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Create Account
+              </button>
+            </div>
+          )}
+
           <div className="mb-5">
             <h2 className="font-display text-xl font-bold mb-1">
               {isInvestorDemo ? "Investor demo" : mode === "signup" ? "Create your account" : "Welcome back"}
@@ -283,9 +284,21 @@ export function Landing() {
               </div>
               <span className="text-[11px] text-muted-foreground leading-relaxed">
                 I agree to the{" "}
-                <a href="#/terms" className="text-primary underline" style={{ fontWeight: 600 }}>Terms & Conditions</a>{" "}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); navigate("/terms"); }}
+                  className="text-primary underline font-semibold cursor-pointer"
+                >
+                  Terms & Conditions
+                </button>{" "}
                 and{" "}
-                <a href="#/privacy-policy" className="text-primary underline" style={{ fontWeight: 600 }}>Privacy Policy</a>.
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); navigate("/privacy-policy"); }}
+                  className="text-primary underline font-semibold cursor-pointer"
+                >
+                  Privacy Policy
+                </button>.
               </span>
             </button>
           )}
@@ -307,17 +320,28 @@ export function Landing() {
             className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
             style={{ fontWeight: 700 }}
           >
-            {loading ? "Signing in…" : isInvestorDemo ? "Open investor demo" : mode === "signup" ? "Create account" : "Sign in"}
+            {loading
+              ? mode === "signup" ? "Creating account…" : "Signing in…"
+              : isInvestorDemo
+                ? "Open investor demo"
+                : mode === "signup"
+                  ? "Create account"
+                  : "Sign in"}
           </button>
 
           {!isInvestorDemo && (
             <button
-              onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setErr(null); setSuccess(null); }}
-              className="mt-3 w-full text-xs text-muted-foreground text-center"
+              type="button"
+              onClick={() => {
+                setMode(mode === "signup" ? "signin" : "signup");
+                setErr(null);
+                setSuccess(null);
+              }}
+              className="mt-3.5 w-full text-xs text-muted-foreground text-center"
             >
-              {mode === "signup" ? "Already have an account?" : "New here?"}{" "}
-              <span className="text-primary" style={{ fontWeight: 600 }}>
-                {mode === "signup" ? "Sign in" : "Create account"}
+              {mode === "signup" ? "Already have an account? " : "Don't have an account? "}
+              <span className="text-primary font-semibold hover:underline">
+                {mode === "signup" ? "Sign in" : "Sign up"}
               </span>
             </button>
           )}
@@ -334,11 +358,11 @@ export function Landing() {
           </span>
         </div>
         <div className="flex items-center justify-center gap-3 text-[11px] text-muted-foreground">
-          <a href="#/privacy-policy" className="underline">Privacy Policy</a>
+          <button type="button" onClick={() => navigate("/privacy-policy")} className="underline hover:text-foreground">Privacy Policy</button>
           <span>·</span>
-          <a href="#/terms" className="underline">Terms</a>
+          <button type="button" onClick={() => navigate("/terms")} className="underline hover:text-foreground">Terms</button>
           <span>·</span>
-          <a href="#/contact" className="underline">Support</a>
+          <button type="button" onClick={() => navigate("/contact")} className="underline hover:text-foreground">Support</button>
         </div>
         <p className="mt-3 text-[11px] text-muted-foreground">
           © {new Date().getFullYear()} LiveSync AI · Made with care in India 🇮🇳

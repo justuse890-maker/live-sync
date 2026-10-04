@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { redactText } from "../../lib/aiPrivacy";
 import { ArrowLeft, ArrowRight, Upload, Sparkles, Loader2, Check, AlertTriangle, ChevronDown, ChevronUp, Plus, ShieldCheck } from "lucide-react";
 import { Screen } from "../Shell";
 import { PremiumLock } from "../PremiumLock";
@@ -218,7 +219,8 @@ function Importer() {
       const res = await fetch(AI_NORMALIZE_URL, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ merchants: ambiguous.map((a) => a.canonical) }),
+        // Only scrubbed merchant labels — no amounts, dates, UPI IDs or account numbers.
+        body: JSON.stringify({ merchants: ambiguous.map((a) => redactText(a.canonical)) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `AI ${res.status}`);

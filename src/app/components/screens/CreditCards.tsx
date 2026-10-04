@@ -26,6 +26,7 @@ import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { getMonthKey, getCurrentMonthKey } from "../../lib/dateUtils";
 
 // Color palettes for card skins
 const CARD_THEMES = [
@@ -153,7 +154,7 @@ const emptyDraft = (): CardDraft => ({
 });
 
 export function CreditCards({ onBack }: { onBack: () => void }) {
-  const { creditCards, transactions, addCreditCard, updateCreditCard, removeCreditCard } = useStore();
+  const { creditCards, transactions, selectedMonth, addCreditCard, updateCreditCard, removeCreditCard } = useStore();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<CreditCard | null>(null);
   const [activeTab, setActiveTab] = useState<string>("all");
@@ -161,22 +162,20 @@ export function CreditCards({ onBack }: { onBack: () => void }) {
 
   // Calculate monthly spend & utilization metrics for each card
   const metrics = useMemo(() => {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const result: Record<string, { spend: number; txCount: number; utilization: number }> = {};
+    const targetMonth = selectedMonth || getCurrentMonthKey();
+    const result: Record<string, { spend: number; txCount: number; utilization: number; cardTxs: any[] }> = {};
 
     for (const card of creditCards) {
       const cardTxs = transactions.filter(
-        (tx) => tx.creditCardId === card.id && tx.type === "expense" && new Date(tx.date) >= monthStart
+        (tx) => tx.creditCardId === card.id && tx.type === "expense" && getMonthKey(tx.date) === targetMonth
       );
       const spend = cardTxs.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
       const limit = card.creditLimit || 0;
       const utilization = limit > 0 ? Math.min(100, (spend / limit) * 100) : 0;
-      result[card.id] = { spend, txCount: cardTxs.length, utilization };
+      result[card.id] = { spend, txCount: cardTxs.length, utilization, cardTxs };
     }
     return result;
-  }, [creditCards, transactions]);
+  }, [creditCards, transactions, selectedMonth]);
 
   // Aggregate Portfolio Stats
   const portfolioStats = useMemo(() => {
@@ -423,7 +422,7 @@ export function CreditCards({ onBack }: { onBack: () => void }) {
           ) : (
             <div className="space-y-4">
               {filteredCards.map((card) => {
-                const cardMetric = metrics[card.id] || { spend: 0, txCount: 0, utilization: 0 };
+                const cardMetric = metrics[card.id] || { spend: 0, txCount: 0, utilization: 0, cardTxs: [] };
                 return (
                   <CardTile
                     key={card.id}
@@ -431,6 +430,7 @@ export function CreditCards({ onBack }: { onBack: () => void }) {
                     spend={cardMetric.spend}
                     txCount={cardMetric.txCount}
                     utilization={cardMetric.utilization}
+                    cardTxs={cardMetric.cardTxs}
                     onEdit={() => beginEdit(card)}
                     onRemove={() => removeCreditCard(card.id)}
                   />
@@ -473,6 +473,7 @@ function CardTile({
   spend,
   txCount,
   utilization,
+  cardTxs = [],
   onEdit,
   onRemove,
 }: {
@@ -480,6 +481,7 @@ function CardTile({
   spend: number;
   txCount: number;
   utilization: number;
+  cardTxs?: any[];
   onEdit: () => void;
   onRemove: () => void;
 }) {
@@ -504,22 +506,22 @@ function CardTile({
         <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/5 to-white/15 pointer-events-none" />
         
         {/* Top Card Row */}
-        <div className="flex justify-between items-start relative z-10">
-          <div>
-            <div className="text-[11px] uppercase tracking-widest text-white/80 font-bold">
+        <div className="flex justify-between items-start gap-2 relative z-10">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] uppercase tracking-widest text-white/80 font-bold truncate">
               {card.bankName || "Bank"}
             </div>
-            <div className="font-display font-black text-lg text-white tracking-wide mt-0.5">
+            <div className="font-display font-black text-lg text-white tracking-wide mt-0.5 truncate">
               {card.cardName || "Payment Card"}
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-1">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-white/20 backdrop-blur-md text-white border border-white/20">
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-white/20 backdrop-blur-md text-white border border-white/20 whitespace-nowrap">
               {cardTypeInfo.label}
             </span>
             {card.isLifetimeFree && (
-              <span className="text-[9px] font-bold text-amber-300 flex items-center gap-0.5">
+              <span className="text-[9px] font-bold text-amber-300 flex items-center gap-0.5 whitespace-nowrap">
                 👑 Lifetime Free
               </span>
             )}
@@ -543,9 +545,9 @@ function CardTile({
         </div>
 
         {/* Card Number & Expiry & Network */}
-        <div className="flex justify-between items-end relative z-10 pt-1">
-          <div>
-            <div className="font-mono tracking-[0.25em] text-sm text-white/90 font-bold">
+        <div className="flex justify-between items-end gap-2 relative z-10 pt-1">
+          <div className="min-w-0">
+            <div className="font-mono tracking-[0.2em] text-sm text-white/90 font-bold whitespace-nowrap">
               •••• •••• •••• {card.last4Digits || "0000"}
             </div>
             {(card.expiryMonth || card.expiryYear) && (
@@ -555,8 +557,8 @@ function CardTile({
             )}
           </div>
 
-          <div className="text-right">
-            <div className="px-2.5 py-1 rounded-md bg-black/40 backdrop-blur-md text-[11px] font-black tracking-wider uppercase text-white border border-white/10">
+          <div className="text-right shrink-0">
+            <div className="px-2.5 py-1 rounded-md bg-black/40 backdrop-blur-md text-[11px] font-black tracking-wider uppercase text-white border border-white/10 whitespace-nowrap">
               {networkInfo.label}
             </div>
           </div>
@@ -566,32 +568,32 @@ function CardTile({
       {/* Card Info & Usage Metrics */}
       <div className="p-4 space-y-3">
         {/* Spend & Limit Usage */}
-        <div className="flex justify-between items-baseline">
-          <div>
-            <div className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
+        <div className="flex justify-between items-baseline gap-2">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground whitespace-nowrap">
               Tracked Spend This Month
             </div>
-            <div className="font-display font-black text-lg text-foreground mt-0.5">
+            <div className="font-display font-black text-lg text-foreground mt-0.5 whitespace-nowrap">
               {inr(spend)} <span className="text-xs font-normal text-muted-foreground">({txCount} txs)</span>
             </div>
           </div>
 
           {isCredit && card.creditLimit ? (
-            <div className="text-right">
-              <div className={`text-xs font-extrabold ${statusColor}`}>
+            <div className="text-right shrink-0">
+              <div className={`text-xs font-extrabold ${statusColor} whitespace-nowrap`}>
                 {utilization.toFixed(0)}% limit used
               </div>
-              <div className="text-[10px] text-muted-foreground">
+              <div className="text-[10px] text-muted-foreground whitespace-nowrap">
                 Limit: {inr(card.creditLimit)}
               </div>
             </div>
           ) : (
             card.creditLimit ? (
-              <div className="text-right">
-                <div className="text-xs font-bold text-foreground">
+              <div className="text-right shrink-0">
+                <div className="text-xs font-bold text-foreground whitespace-nowrap">
                   Limit: {inr(card.creditLimit)}
                 </div>
-                <div className="text-[10px] text-muted-foreground">Daily / Per-tx</div>
+                <div className="text-[10px] text-muted-foreground whitespace-nowrap">Daily / Per-tx</div>
               </div>
             ) : null
           )}
@@ -651,6 +653,29 @@ function CardTile({
           <div className="text-xs bg-indigo-50/50 border border-indigo-100 rounded-xl p-2.5 text-indigo-950 flex items-start gap-2">
             <Sparkles className="size-3.5 text-indigo-600 shrink-0 mt-0.5" />
             <span className="text-[11px] leading-relaxed">{card.notes}</span>
+          </div>
+        )}
+
+        {/* Tracked Card Expenses List */}
+        {cardTxs && cardTxs.length > 0 && (
+          <div className="rounded-2xl bg-muted/40 border border-border/50 p-3 space-y-2">
+            <div className="flex justify-between items-center text-[10px] uppercase font-bold text-muted-foreground tracking-wider">
+              <span>Card Expenses This Month</span>
+              <span className="text-indigo-600 font-extrabold">{cardTxs.length} logged</span>
+            </div>
+            <div className="space-y-1.5">
+              {cardTxs.slice(0, 5).map((t: any) => (
+                <div key={t.id} className="flex justify-between items-center text-xs py-1 border-b border-border/30 last:border-0">
+                  <div className="min-w-0 flex-1 truncate font-semibold text-foreground">
+                    {t.merchant || t.title || t.category}
+                    <span className="text-[10px] text-muted-foreground font-normal ml-1.5 font-mono">({t.date})</span>
+                  </div>
+                  <div className="font-bold text-rose-600 shrink-0 ml-2">
+                    -{inr(Math.abs(t.amount))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

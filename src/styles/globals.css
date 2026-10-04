@@ -76,8 +76,8 @@ body {
 .app-container {
   display: flex;
   flex-direction: column;
-  /* Fill the measured JS height so keyboard, orientation, foldables all work */
-  height: var(--app-height, 100%);
+  /* Fill the container height so keyboard, orientation, foldables all work */
+  height: 100%;
   width: 100%;
   /* Push content below status bar / above gesture nav bar */
   padding-top: env(safe-area-inset-top, 0px);
@@ -105,8 +105,55 @@ body {
  * 80px clears the bottom nav bar height (approx 68px bar + 12px gap).
  */
 .page-content {
-  padding-bottom: 80px;
+  padding-bottom: 92px;
   box-sizing: border-box;
+}
+
+/* ─── Product visual system ────────────────────────────────────────────────
+ * Pages were built over time with several campaign-like hero gradients. The
+ * app now uses one quiet financial surface language: white cards, restrained
+ * elevation, navy for product actions, and colour only for data meaning.
+ * These compatibility rules deliberately cover older screens too, so a newly
+ * opened tool cannot fall back to the former colourful treatment. */
+.app-container :is([class*="bg-gradient"], [style*="linear-gradient"]) {
+  background: var(--card) !important;
+  background-image: none !important;
+  border-color: var(--border) !important;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.03) !important;
+  color: var(--foreground) !important;
+}
+
+.app-container :is([class*="bg-gradient"], [style*="linear-gradient"]) :is([class*="text-white"], [class*="text-yellow-300"], [class*="text-indigo-300"]) {
+  color: var(--foreground) !important;
+}
+
+/* A few older summary modules use a solid slate fill rather than a gradient.
+ * Treat those as the same neutral information surface. */
+.app-container :is([class*="bg-slate-800"], [class*="bg-slate-900"]):not([class*="bg-black"]) {
+  background-color: var(--card) !important;
+  border-color: var(--border) !important;
+}
+
+.app-container :is([class*="bg-slate-800"], [class*="bg-slate-900"]) :is([class*="text-white"], [class*="text-indigo-300"]) {
+  color: var(--foreground) !important;
+}
+
+/* Legacy indigo/blue UI accents resolve to the single product navy. Lighter
+ * tints become neutral surfaces; semantic green, red and amber remain intact. */
+.app-container :is([class*="bg-indigo-50"], [class*="bg-indigo-100"], [class*="bg-blue-50"], [class*="bg-blue-100"], [class*="bg-violet-50"], [class*="bg-violet-100"], [class*="bg-purple-50"], [class*="bg-purple-100"]) {
+  background-color: var(--muted) !important;
+}
+
+.app-container :is([class*="bg-indigo-6"], [class*="bg-indigo-7"], [class*="bg-indigo-8"], [class*="bg-indigo-9"], [class*="bg-blue-6"], [class*="bg-blue-7"], [class*="bg-blue-8"], [class*="bg-blue-9"], [class*="bg-violet-6"], [class*="bg-violet-7"], [class*="bg-violet-8"], [class*="bg-violet-9"], [class*="bg-purple-6"], [class*="bg-purple-7"], [class*="bg-purple-8"], [class*="bg-purple-9"]) {
+  background-color: var(--primary) !important;
+}
+
+.app-container :is([class*="text-indigo-"], [class*="text-violet-"], [class*="text-purple-"]) {
+  color: var(--primary) !important;
+}
+
+.app-container :is([class*="shadow-lg"], [class*="shadow-xl"]) {
+  box-shadow: 0 4px 12px rgb(15 23 42 / 0.06) !important;
 }
 
 /* ─── Safe-area helper classes ──────────────────────────────────── */

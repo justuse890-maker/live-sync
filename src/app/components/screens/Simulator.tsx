@@ -52,7 +52,7 @@ function BuySim({ income, expense, fund }: { income: number; expense: number; fu
   const [down, setDown] = useState(20);
   const [years, setYears] = useState(5);
   const [rate, setRate] = useState(9.5);
-  const r = useMemo(() => simulate({ kind: "buy", price, downPct: down, loanYears: years, loanRate: rate, monthlyExpense: expense || 60000, monthlyIncome: income || 100000, emergencyFund: fund }), [price, down, years, rate, income, expense, fund]) as ReturnType<typeof simulate> & { emi: number; totalInterest: number; newSavingsRate: number; runwayHit: number; safe: boolean };
+  const r = useMemo(() => simulate({ kind: "buy", price, downPct: down, loanYears: years, loanRate: rate, monthlyExpense: expense || 0, monthlyIncome: income || 0, emergencyFund: fund }), [price, down, years, rate, income, expense, fund]) as ReturnType<typeof simulate> & { emi: number; totalInterest: number; newSavingsRate: number; runwayHit: number; safe: boolean };
   const oppCost = opportunityCost(price * down / 100, 10);
 
   return (
@@ -75,8 +75,8 @@ function BuySim({ income, expense, fund }: { income: number; expense: number; fu
 }
 
 function QuitSim({ expense, liquid }: { expense: number; liquid: number }) {
-  const [exp, setExp] = useState(expense || 60000);
-  const [liq, setLiq] = useState(liquid || 500000);
+  const [exp, setExp] = useState(expense || 0);
+  const [liq, setLiq] = useState(liquid || 0);
   const [side, setSide] = useState(0);
   const r = useMemo(() => simulate({ kind: "quit", monthlyExpense: exp, liquidAssets: liq, sideIncome: side }), [exp, liq, side]) as { monthsRunway: number; risk: string; verdict: string };
   return (
@@ -94,7 +94,7 @@ function QuitSim({ expense, liquid }: { expense: number; liquid: number }) {
 
 function PrepaySim({ liabilities }: { liabilities: any[] }) {
   const first = liabilities[0];
-  const [out, setOut] = useState(first?.outstanding || 1500000);
+  const [out, setOut] = useState(first?.outstanding || 0);
   const [rate, setRate] = useState(first?.interestRate || 8.5);
   const [yrs, setYrs] = useState(10);
   const [lump, setLump] = useState(300000);

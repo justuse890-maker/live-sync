@@ -4,6 +4,8 @@ dist/
 *.apk
 *.bak
 *.log
+*.tgz
+*.tar.gz
 .env
 .env.local
 .env.production

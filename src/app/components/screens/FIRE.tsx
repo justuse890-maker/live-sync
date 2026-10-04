@@ -10,9 +10,11 @@ export function FIRE({ onBack }: { onBack: () => void }) {
   const flow = useMemo(() => monthlyFlow(transactions, 0), [transactions]);
   const { netWorth: nw } = useMemo(() => netWorth(assets, liabilities), [assets, liabilities]);
 
-  const [monthlyExpense, setMonthlyExpense] = useState(flow.expense || 60000);
+  // Pre-filled only from your own data; anything we don't know starts empty.
+  const [monthlyExpense, setMonthlyExpense] = useState(flow.expense || 0);
   const [invested, setInvested] = useState(Math.max(0, nw));
-  const [age, setAge] = useState(28);
+  const [age, setAge] = useState(() => { try { return Number(localStorage.getItem("ls_user_age")) || 0; } catch { return 0; } });
+  const setAgeSaved = (v: number) => { setAge(v); try { localStorage.setItem("ls_user_age", String(v)); } catch {} };
   const [rate, setRate] = useState(11);
 
   const r = useMemo(() => fire(monthlyExpense, invested, age, rate), [monthlyExpense, invested, age, rate]);
@@ -27,7 +29,8 @@ export function FIRE({ onBack }: { onBack: () => void }) {
               <Flame className="size-5" />
               <div className="text-sm" style={{ fontWeight: 700 }}>Your FIRE number</div>
             </div>
-            <div className="font-display mt-1" style={{ fontSize: 30, fontWeight: 700 }}>{inr(Math.round(r.fireNumber))}</div>
+            <div className="font-display mt-1" style={{ fontSize: 30, fontWeight: 700 }}>{monthlyExpense > 0 ? inr(Math.round(r.fireNumber)) : "—"}</div>
+            {(monthlyExpense <= 0 || age <= 0) && <div className="text-xs bg-white/15 rounded-lg px-2.5 py-1.5 mt-2">Enter your monthly expense and age below to calculate.</div>}
             <div className="text-xs text-white/80 mt-1">25× annual expenses at 4% safe withdrawal rate</div>
 
             <div className="mt-4">
@@ -38,7 +41,7 @@ export function FIRE({ onBack }: { onBack: () => void }) {
               <div className="h-2 bg-white/15 rounded-full overflow-hidden">
                 <div className="h-full bg-white" style={{ width: `${r.progress}%` }} />
               </div>
-              {r.projectedAge != null && (
+              {r.projectedAge != null && age > 0 && monthlyExpense > 0 && (
                 <div className="text-xs text-white/85 mt-2">At {rate}% returns, you reach FIRE at age <span style={{ fontWeight: 700 }}>{r.projectedAge}</span></div>
               )}
             </div>
@@ -48,7 +51,7 @@ export function FIRE({ onBack }: { onBack: () => void }) {
             <div className="text-xs text-muted-foreground uppercase tracking-wider" style={{ fontWeight: 600 }}>Inputs</div>
             <Num label="Monthly expense (₹)" value={monthlyExpense} onChange={setMonthlyExpense} />
             <Num label="Invested so far (₹)" value={invested} onChange={setInvested} />
-            <Num label="Current age" value={age} onChange={setAge} />
+            <Num label="Current age" value={age} onChange={setAgeSaved} />
             <Num label="Expected return % p.a." value={rate} onChange={setRate} decimal />
           </div>
 

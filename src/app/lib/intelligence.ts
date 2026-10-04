@@ -422,8 +422,8 @@ export function simulate(input: SimulatorInput) {
     const n = input.loanYears * 12;
     const emi = principal > 0 ? (principal * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
     const totalInterest = emi * n - principal;
-    const newSavingsRate = ((input.monthlyIncome - input.monthlyExpense - emi) / input.monthlyIncome) * 100;
-    const runwayHit = (input.price * input.downPct / 100) / input.monthlyExpense;
+    const newSavingsRate = input.monthlyIncome > 0 ? ((input.monthlyIncome - input.monthlyExpense - emi) / input.monthlyIncome) * 100 : 0;
+    const runwayHit = input.monthlyExpense > 0 ? (input.price * input.downPct / 100) / input.monthlyExpense : 0;
     const safe = newSavingsRate > 15 && input.emergencyFund > input.monthlyExpense * 3;
     return { emi, totalInterest, newSavingsRate, runwayHit, safe,
       verdict: safe ? "Likely safe" : "Risky — savings rate or emergency fund drops too low" };
@@ -448,44 +448,273 @@ export function simulate(input: SimulatorInput) {
 
 // ─── Unified Timeline ──────────────────────────────────────────────────────
 export type TimelineEvent = {
-  id: string; date: string; kind: "income" | "expense" | "subscription" | "goal" | "loan" | "tax" | "sip" | "bill";
-  title: string; amount?: number; meta?: string;
+  id: string;
+  date: string;
+  kind: "income" | "expense" | "subscription" | "goal" | "loan" | "tax" | "sip" | "bill" | "emi" | "card_bill" | "insurance" | "staff_salary" | "reminder";
+  title: string;
+  amount?: number;
+  meta?: string;
+  linkScreen?: string;
 };
 
-export function buildTimeline({ transactions, subscriptions, goals, loans, bills }: {
-  transactions: Tx[]; subscriptions: any[]; goals: any[]; loans: any[]; bills: any[];
+function getNextMonthlyOccurrence(dayOfMonth: number): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const validDay = Math.min(Math.max(1, dayOfMonth), 28);
+
+  let d = new Date(year, month, validDay);
+  if (d.getTime() < now.getTime() - 86400000) {
+    d = new Date(year, month + 1, validDay);
+  }
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function buildTimeline({
+  transactions = [],
+  subscriptions = [],
+  goals = [],
+  buckets = [],
+  loans = [],
+  structuredLoans = [],
+  creditCards = [],
+  sips = [],
+  insurance = [],
+  householdStaff = [],
+  householdReminders = [],
+  societyNotices = [],
+  bills = [],
+}: {
+  transactions?: Tx[];
+  subscriptions?: any[];
+  goals?: any[];
+  buckets?: any[];
+  loans?: any[];
+  structuredLoans?: any[];
+  creditCards?: any[];
+  sips?: any[];
+  insurance?: any[];
+  householdStaff?: any[];
+  householdReminders?: any[];
+  societyNotices?: any[];
+  bills?: any[];
 }): TimelineEvent[] {
   const events: TimelineEvent[] = [];
 
-  for (const t of transactions.slice(0, 60)) {
-    events.push({ id: `tx-${t.id}`, date: t.date, kind: t.type === "income" ? "income" : "expense",
-      title: t.merchant || t.title, amount: t.amount, meta: t.category });
-  }
-  for (const s of subscriptions) {
-    if (s.nextRenewal) events.push({ id: `sub-${s.id}`, date: s.nextRenewal, kind: "subscription",
-      title: `${s.name} renews`, amount: s.amount || s.cost, meta: "Subscription" });
-  }
-  for (const g of goals) {
-    if (g.deadline) events.push({ id: `goal-${g.id}`, date: g.deadline, kind: "goal",
-      title: `${g.name} target`, amount: g.target, meta: "Goal milestone" });
-  }
-  for (const l of loans) {
-    if (!l.settled && l.repayBy) events.push({ id: `loan-${l.id}`, date: l.repayBy, kind: "loan",
-      title: `${l.direction === "borrowed" ? "Owe" : "Collect"} ${l.person}`, amount: l.amount, meta: "Loan repayment" });
-  }
-  for (const b of bills || []) {
-    if (b.due) events.push({ id: `bill-${b.id}`, date: b.due, kind: "bill",
-      title: b.name, amount: b.amount, meta: "Bill" });
+  // 1. Transactions (recent 60)
+  for (const t of (transactions || []).slice(0, 60)) {
+    events.push({
+      id: `tx-${t.id}`,
+      date: t.date,
+      kind: t.type === "income" ? "income" : "expense",
+      title: t.merchant || t.title,
+      amount: t.amount,
+      meta: t.category,
+      linkScreen: "transactions",
+    });
   }
 
-  // India tax calendar
+  // 2. Subscriptions (check both renewal and nextRenewal)
+  for (const s of (subscriptions || [])) {
+    const renewDate = s.renewal || s.nextRenewal;
+    if (renewDate) {
+      events.push({
+        id: `sub-${s.id}`,
+        date: renewDate,
+        kind: "subscription",
+        title: `${s.name} renews`,
+        amount: Number(s.cost || s.amount) || 0,
+        meta: s.billingCycle ? `${s.billingCycle} subscription` : "Subscription",
+        linkScreen: "subscriptions",
+      });
+    }
+  }
+
+  // 3. Goal Buckets & Milestones
+  for (const b of (buckets || [])) {
+    if (b.targetDate && b.status === "active") {
+      const remaining = Math.max(0, (Number(b.targetAmount) || 0) - (Number(b.savedAmount) || 0));
+      events.push({
+        id: `bucket-${b.id}`,
+        date: b.targetDate,
+        kind: "goal",
+        title: `Goal: ${b.name}`,
+        amount: remaining > 0 ? remaining : Number(b.targetAmount) || 0,
+        meta: "Target deadline",
+        linkScreen: "buckets",
+      });
+    }
+  }
+  for (const g of (goals || [])) {
+    if (g.deadline) {
+      events.push({
+        id: `goal-${g.id}`,
+        date: g.deadline,
+        kind: "goal",
+        title: `Goal: ${g.name}`,
+        amount: Number(g.target) || 0,
+        meta: "Target deadline",
+        linkScreen: "goals",
+      });
+    }
+  }
+
+  // 4. Structured Loans / EMIs (Home/Car/Personal)
+  for (const sl of (structuredLoans || [])) {
+    if (!sl.closed && sl.emiAmount) {
+      const emiDate = sl.nextEmiDueDate || getNextMonthlyOccurrence(10);
+      events.push({
+        id: `emi-${sl.id}`,
+        date: emiDate,
+        kind: "emi",
+        title: `${sl.lenderName} ${sl.loanType || "Loan"} EMI`,
+        amount: Number(sl.emiAmount) || 0,
+        meta: `Monthly loan EMI`,
+        linkScreen: "loans",
+      });
+    }
+  }
+
+  // 5. Credit Card Bills
+  for (const cc of (creditCards || [])) {
+    if (cc.cardType === "credit" && cc.dueDate) {
+      const cardDueDate = getNextMonthlyOccurrence(Number(cc.dueDate));
+      events.push({
+        id: `card-${cc.id}`,
+        date: cardDueDate,
+        kind: "card_bill",
+        title: `${cc.bankName} ${cc.cardName} Bill Due`,
+        amount: cc.creditLimit ? Math.round(cc.creditLimit * 0.15) : undefined,
+        meta: `Card ending in ${cc.last4Digits || "•••"}`,
+        linkScreen: "cards",
+      });
+    }
+  }
+
+  // 6. Mutual Fund SIPs
+  for (const sip of (sips || [])) {
+    const sipDate = sip.deductionDate ? getNextMonthlyOccurrence(Number(sip.deductionDate)) : getNextMonthlyOccurrence(5);
+    events.push({
+      id: `sip-${sip.id}`,
+      date: sipDate,
+      kind: "sip",
+      title: `SIP: ${sip.fundName}`,
+      amount: Number(sip.amount) || 0,
+      meta: `${sip.frequency || "Monthly"} mutual fund`,
+      linkScreen: "sip",
+    });
+  }
+
+  // 7. Insurance Policies
+  for (const ins of (insurance || [])) {
+    if (ins.dueDate) {
+      events.push({
+        id: `ins-${ins.id}`,
+        date: ins.dueDate,
+        kind: "insurance",
+        title: `${ins.name} Premium`,
+        amount: Number(ins.premiumAmount) || 0,
+        meta: `${ins.type || "Policy"} · ${ins.insurer || ""}`,
+        linkScreen: "insurance",
+      });
+    }
+  }
+
+  // 8. Household Staff Salaries
+  for (const staff of (householdStaff || [])) {
+    if (staff.salary) {
+      const salaryDate = getNextMonthlyOccurrence(1);
+      events.push({
+        id: `staff-${staff.id}`,
+        date: salaryDate,
+        kind: "staff_salary",
+        title: `Pay ${staff.name} (${staff.role || "Staff"})`,
+        amount: Number(staff.salary) || 0,
+        meta: "Monthly staff salary",
+        linkScreen: "staff",
+      });
+    }
+  }
+
+  // 9. Household Reminders
+  for (const rem of (householdReminders || [])) {
+    if (!rem.done && rem.dueDate) {
+      events.push({
+        id: `rem-${rem.id}`,
+        date: rem.dueDate,
+        kind: "reminder",
+        title: rem.title,
+        amount: rem.estimatedCost || undefined,
+        meta: `Household reminder (${rem.type || "maintenance"})`,
+        linkScreen: "reminders",
+      });
+    }
+  }
+
+  // 10. Society Maintenance Bills
+  for (const notice of (societyNotices || [])) {
+    if (notice.date) {
+      events.push({
+        id: `soc-${notice.id}`,
+        date: notice.date,
+        kind: "bill",
+        title: `Society: ${notice.title}`,
+        amount: notice.amount ? Number(notice.amount) : undefined,
+        meta: notice.type === "bill" ? "Society maintenance bill" : "Notice",
+        linkScreen: "society",
+      });
+    }
+  }
+
+  // 11. Personal Loans
+  for (const l of (loans || [])) {
+    if (!l.settled && l.repayBy) {
+      events.push({
+        id: `loan-${l.id}`,
+        date: l.repayBy,
+        kind: "loan",
+        title: `${l.direction === "borrowed" ? "Repay" : "Collect from"} ${l.person}`,
+        amount: l.amount,
+        meta: `Personal loan ${l.direction || ""}`,
+        linkScreen: "loans",
+      });
+    }
+  }
+
+  // 12. Manual Utility Bills
+  for (const b of (bills || [])) {
+    if (b.due) {
+      events.push({
+        id: `bill-${b.id}`,
+        date: b.due,
+        kind: "bill",
+        title: b.name,
+        amount: b.amount,
+        meta: "Utility bill",
+      });
+    }
+  }
+
+  // 13. India Tax Calendar
   for (const tx of [
     { date: "2026-06-15", title: "Advance tax — Q1" },
     { date: "2026-07-31", title: "ITR filing deadline" },
     { date: "2026-09-15", title: "Advance tax — Q2" },
     { date: "2026-12-15", title: "Advance tax — Q3" },
     { date: "2027-03-15", title: "Advance tax — Q4" },
-  ]) events.push({ id: `tax-${tx.date}`, date: tx.date, kind: "tax", title: tx.title, meta: "Tax calendar" });
+  ]) {
+    events.push({
+      id: `tax-${tx.date}`,
+      date: tx.date,
+      kind: "tax",
+      title: tx.title,
+      meta: "Statutory tax deadline",
+      linkScreen: "tax",
+    });
+  }
 
   return events.sort((a, b) => (a.date < b.date ? 1 : -1));
 }

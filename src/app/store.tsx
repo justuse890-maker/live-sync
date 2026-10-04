@@ -1,8 +1,46 @@
-import { createContext, ReactNode, useContext, useEffect, useState, useCallback } from "react";
-import { api } from "./lib/api";
+import { createContext, ReactNode, useContext, useEffect, useState, useCallback, useRef } from "react";
+import { api, OfflineError } from "./lib/api";
 import { Asset, Liability, LifeEvent } from "./lib/intelligence";
-import { saveToCache, loadFromCache, clearCache } from "./lib/localCache";
+import { saveToCache, loadFromCache, clearCache, loadCachedUserId } from "./lib/localCache";
 import { getCurrentMonthKey } from "./lib/dateUtils";
+import { sanitizeBucket } from "./lib/fieldCrypto";
+import { enqueueOp, loadQueue, dequeueOp, clearQueue } from "./lib/offlineQueue";
+import { encryptFields } from "./lib/fieldCrypto";
+import { Note, markBillPaid, rollForwardIfDue, isBill } from "./lib/notes";
+import { feedback } from "./lib/feedback";
+import { localReplace, eraseAllUserData } from "./lib/localDb";
+import { todayISO } from "./lib/dateUtils";
+
+/**
+ * All writes are local (IndexedDB on this device), so they never depend on
+ * connectivity. Kept as a named constant so the intent is explicit.
+ */
+const WRITE_LOCALLY = true;
+
+// ── Offline queue drain ────────────────────────────────────────────────────
+// Called when connectivity returns to replay any queued writes against Supabase.
+export async function drainOfflineQueue(
+  onIdSwap?: (collection: string, localId: string, serverId: string) => void
+) {
+  // Ops queued by older (cloud-sync) builds are replayed into the device DB.
+  const ops = await loadQueue();
+  if (ops.length === 0) return;
+  console.log(`[OfflineQueue] Draining ${ops.length} queued ops…`);
+  for (const op of ops) {
+    try {
+      if (op.method === "create" && op.payload) {
+        const created = await api.create<any>(op.collection, op.payload);
+        if (op.localId && onIdSwap) onIdSwap(op.collection, op.localId, created.id);
+      } else if (op.method === "remove" && op.itemId) {
+        await api.remove(op.collection, op.itemId);
+      }
+      await dequeueOp(op.id);
+    } catch (e) {
+      console.warn("[OfflineQueue] Replay failed for op", op.id, e);
+      // Keep the op in the queue — will retry next time
+    }
+  }
+}
 
 export type PaymentMode = "cash" | "upi" | "credit" | "debit" | "other";
 export type PaymentSplit = { mode: PaymentMode; amount: number };
@@ -19,6 +57,8 @@ export type Tx = {
   payments?: PaymentSplit[];
   creditCardId?: string; // ID of the credit card used (when payment mode is 'credit')
   accountId?: string; // ID of the linked bank account (from ConnectedAccounts)
+  loanId?: string; // ID of the linked StructuredLoan (e.g. for EMI or loan payments)
+  loanPaymentType?: "emi" | "prepayment";
   notes?: string;
   createdAt?: string;
 };
@@ -58,6 +98,15 @@ export type BuilderMilestone = {
   paid: boolean;
 };
 
+export type EmiRevision = {
+  id: string;
+  effectiveDate: string; // e.g. "2025-04" or ISO date
+  emiAmount: number;
+  interestRatePA?: number;
+  reason?: string; // e.g. "RBI Repo rate hike", "Tenure adjustment", "Prepayment adjustment"
+  createdAt?: string;
+};
+
 export type StructuredLoan = {
   id: string;
   loanType: StructuredLoanType;
@@ -74,6 +123,8 @@ export type StructuredLoan = {
   totalEmis: number;
   isRegistrationLoan: boolean;
   builderMilestones?: BuilderMilestone[];
+  emiHistory?: EmiRevision[];
+  autoDebitBankAccountId?: string;
   notes?: string;
   closed?: boolean;
   createdAt?: string;
@@ -239,7 +290,35 @@ export type Subscription = {
   period?: string;
 };
 
-const DEFAULT_CATEGORIES = ["Food", "Travel", "Shopping", "Grocery", "Medical", "Rent", "Entertainment", "Other"];
+const DEFAULT_CATEGORIES = ["Food", "Travel", "Shopping", "Grocery", "Medical", "Rent", "Entertainment", "Tuition", "EMI", "Maid Salary", "Festival", "Other"];
+
+export type HouseholdStaff = {
+  id: string;
+  name: string;
+  role: string;
+  salary: number;
+  schedule: string;
+  time: string;
+};
+
+export type SocietyNotice = {
+  id: string;
+  title: string;
+  type: "notice" | "bill";
+  date: string;
+  details: string;
+  amount?: number;
+  paid?: boolean;
+};
+
+export type HouseholdReminder = {
+  id: string;
+  title: string;
+  type: "maintenance" | "health" | "vehicle" | "other";
+  dueDate: string;
+  repeat: string;
+  done: boolean;
+};
 
 /** Generic deduplication helper ensuring unique ID and functional uniqueness */
 export function dedupeList<T extends { id?: string }>(
@@ -285,7 +364,10 @@ export const bucketContribKey = (bc: BucketContribution) => `${bc.bucketId}|${bc
 export const budgetKey = (b: Budget) => `${(b.category || "").trim().toLowerCase()}|${b.month || ""}`;
 export const subscriptionKey = (s: Subscription) => `${(s.name || "").trim().toLowerCase()}|${s.cost}|${s.renewal}`;
 export const assetKey = (a: Asset) => `${(a.name || "").trim().toLowerCase()}|${a.kind || ""}|${a.value}`;
-export const liabilityKey = (l: Liability) => `${(l.name || "").trim().toLowerCase()}|${l.kind || ""}|${l.amount}`;
+export const liabilityKey = (l: Liability) => `${(l.name || "").trim().toLowerCase()}|${l.kind || ""}|${l.outstanding}`;
+export const householdStaffKey = (s: HouseholdStaff) => `${(s.name || "").trim().toLowerCase()}|${s.role}`;
+export const societyNoticeKey = (n: SocietyNotice) => `${(n.title || "").trim().toLowerCase()}|${n.date}|${n.type}`;
+export const householdReminderKey = (r: HouseholdReminder) => `${(r.title || "").trim().toLowerCase()}|${r.dueDate}`;
 
 type StoreCtx = {
   ready: boolean;
@@ -309,6 +391,16 @@ type StoreCtx = {
   properties: Property[];
   creditScore: CreditScoreLog[];
   fraudAlerts: FraudAlert[];
+  householdStaff: HouseholdStaff[];
+  societyNotices: SocietyNotice[];
+  householdReminders: HouseholdReminder[];
+  notes: Note[];
+  upsertNote: (n: Partial<Note> & { id?: string }) => Promise<Note>;
+  removeNote: (id: string) => Promise<void>;
+  /** Mark a bill note as paid: logs the expense and rolls to the next due date. */
+  payBill: (id: string, opts?: { amount?: number; logExpense?: boolean }) => Promise<void>;
+  notificationSound: string;
+  setNotificationSound: (s: string) => void;
   selectedMonth: string;
   setSelectedMonth: (m: string) => void;
   deleteAllData: () => Promise<void>;
@@ -360,6 +452,14 @@ type StoreCtx = {
   removeBudget: (id: string) => Promise<void>;
   addSubscription: (s: Omit<Subscription, "id">) => Promise<void>;
   removeSubscription: (id: string) => Promise<void>;
+  addHouseholdStaff: (s: Omit<HouseholdStaff, "id">) => Promise<void>;
+  removeHouseholdStaff: (id: string) => Promise<void>;
+  addSocietyNotice: (n: Omit<SocietyNotice, "id">) => Promise<void>;
+  updateSocietyNotice: (n: SocietyNotice) => Promise<void>;
+  removeSocietyNotice: (id: string) => Promise<void>;
+  addHouseholdReminder: (r: Omit<HouseholdReminder, "id">) => Promise<void>;
+  updateHouseholdReminder: (r: HouseholdReminder) => Promise<void>;
+  removeHouseholdReminder: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
@@ -388,6 +488,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [properties, setProperties] = useState<Property[]>([]);
   const [creditScore, setCreditScore] = useState<CreditScoreLog[]>([]);
   const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([]);
+  const [householdStaff, setHouseholdStaff] = useState<HouseholdStaff[]>([]);
+  const [societyNotices, setSocietyNotices] = useState<SocietyNotice[]>([]);
+  const [householdReminders, setHouseholdReminders] = useState<HouseholdReminder[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [notificationSound, setNotificationSoundState] = useState<string>("default");
 
   const refresh = useCallback(async () => {
     // ── Phase 1: Load from local cache (instant, offline-first) ──
@@ -397,6 +502,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         cachedSips, cachedIns, cachedInv, cachedGold, cachedProp, cachedCs, cachedFraud,
         cachedGoals, cachedBudgets, cachedSubs, cachedBuckets, cachedBucketContribs,
         cachedStructuredLoans, cachedCreditCards,
+        cachedHouseholdStaff, cachedSocietyNotices, cachedHouseholdReminders,
+        cachedSound, cachedNotes
       ] = await Promise.all([
         loadFromCache<Tx>("transactions"),
         loadFromCache<Loan>("loans"),
@@ -418,6 +525,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         loadFromCache<BucketContribution>("bucketContributions"),
         loadFromCache<StructuredLoan>("structuredLoans"),
         loadFromCache<CreditCard>("creditCards"),
+        loadFromCache<HouseholdStaff>("householdStaff"),
+        loadFromCache<SocietyNotice>("societyNotices"),
+        loadFromCache<HouseholdReminder>("householdReminders"),
+        loadFromCache<string>("notificationSound").then(r => r?.[0]),
+        loadFromCache<Note>("notes"),
       ]);
 
       // Apply cached data if available (instant rendering)
@@ -436,28 +548,42 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (cachedCs) setCreditScore(dedupeList(cachedCs).sort((a, b) => b.date.localeCompare(a.date)));
       if (cachedFraud) setFraudAlerts(dedupeList(cachedFraud));
       if (cachedGoals) setGoals(dedupeList(cachedGoals, goalKey));
-      if (cachedBuckets) setBuckets(dedupeList(cachedBuckets, bucketKey));
+      if (cachedBuckets) {
+        const userId = await api.getCurrentUserId();
+        const sanitized = await Promise.all(cachedBuckets.map((b) => sanitizeBucket(b, userId)));
+        setBuckets(dedupeList(sanitized, bucketKey));
+      }
       if (cachedBucketContribs) setBucketContributions(dedupeList(cachedBucketContribs, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1)));
       if (cachedBudgets) setBudgets(dedupeList(cachedBudgets, budgetKey));
       if (cachedSubs) setSubscriptions(dedupeList(cachedSubs, subscriptionKey));
+      if (cachedHouseholdStaff) setHouseholdStaff(dedupeList(cachedHouseholdStaff, householdStaffKey));
+      if (cachedSocietyNotices) setSocietyNotices(dedupeList(cachedSocietyNotices, societyNoticeKey));
+      if (cachedHouseholdReminders) setHouseholdReminders(dedupeList(cachedHouseholdReminders, householdReminderKey));
+      if (cachedSound) setNotificationSoundState(cachedSound);
+      if (cachedNotes) {
+        // Keep-style: repeating (non-bill) reminders that already fired roll to their next time.
+        const rolled = cachedNotes.map((n) => rollForwardIfDue(n) ?? n);
+        setNotes(dedupeList(rolled));
+      }
       if (cachedCats && cachedCats.length > 0) {
         const custom = cachedCats.map((c) => c.name).filter(Boolean);
         setCategories(Array.from(new Set([...DEFAULT_CATEGORIES, ...custom])));
       }
       // Mark ready early if we had cached data
-      const hadCache = cachedTx || cachedGoals || cachedLoans;
+      const hadCache = cachedTx || cachedGoals || cachedLoans || cachedNotes;
       if (hadCache) setReady(true);
     } catch (e) {
       console.warn("Local cache load failed (non-fatal):", e);
     }
 
-    // ── Phase 2: Sync from cloud (background) ──
+    // ── Phase 2: Read the device database (+ one-time legacy import, see api.ts) ──
     try {
       const [
         txRemote, loansRemote, catsRemote, assetsRemote, liabRemote, eventsRemote,
         sipsRemote, insRemote, invRemote, goldRemote, propRemote, csRemote, fraudRemote,
         goalsRemote, budgetsRemote, subsRemote, bucketsRemote, bucketContribsRemote,
-        structuredLoansRemote, creditCardsRemote
+        structuredLoansRemote, creditCardsRemote,
+        householdStaffRemote, societyNoticesRemote, householdRemindersRemote,
       ] = await Promise.all([
         api.list<Tx>("transactions"),
         api.list<Loan>("loans"),
@@ -479,6 +605,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         api.list<BucketContribution>("bucketContributions"),
         api.list<StructuredLoan>("structuredLoans"),
         api.list<CreditCard>("creditCards"),
+        api.list<HouseholdStaff>("householdStaff"),
+        api.list<SocietyNotice>("societyNotices"),
+        api.list<HouseholdReminder>("reminders"),
       ]);
       const cleanAssets = dedupeList(assetsRemote, assetKey);
       const cleanLiab = dedupeList(liabRemote, liabilityKey);
@@ -495,7 +624,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const cleanStructuredLoans = dedupeList(structuredLoansRemote, structuredLoanKey);
       const cleanCreditCards = dedupeList(creditCardsRemote, creditCardKey);
       const cleanGoals = dedupeList(goalsRemote, goalKey);
-      const cleanBuckets = dedupeList(bucketsRemote, bucketKey);
+      const userId = await api.getCurrentUserId();
+      const sanitizedBuckets = await Promise.all(bucketsRemote.map((b) => sanitizeBucket(b, userId)));
+      const cleanBuckets = dedupeList(sanitizedBuckets, bucketKey);
       const cleanBucketContribs = dedupeList(bucketContribsRemote, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1));
       const cleanBudgets = dedupeList(budgetsRemote, budgetKey);
       const cleanSubs = dedupeList(subsRemote, subscriptionKey);
@@ -519,6 +650,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setBucketContributions(cleanBucketContribs);
       setBudgets(cleanBudgets);
       setSubscriptions(cleanSubs);
+
+      const cleanHouseholdStaff = dedupeList(householdStaffRemote, householdStaffKey);
+      const cleanSocietyNotices = dedupeList(societyNoticesRemote, societyNoticeKey);
+      const cleanHouseholdReminders = dedupeList(householdRemindersRemote, householdReminderKey);
+      setHouseholdStaff(cleanHouseholdStaff);
+      setSocietyNotices(cleanSocietyNotices);
+      setHouseholdReminders(cleanHouseholdReminders);
 
       if (catsRemote.length === 0) {
         setCategories(DEFAULT_CATEGORIES);
@@ -549,6 +687,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       saveToCache("bucketContributions", cleanBucketContribs);
       saveToCache("structuredLoans", cleanStructuredLoans);
       saveToCache("creditCards", cleanCreditCards);
+      saveToCache("householdStaff", cleanHouseholdStaff);
+      saveToCache("societyNotices", cleanSocietyNotices);
+      saveToCache("householdReminders", cleanHouseholdReminders);
     } catch (e) {
       console.error("Initial store load failed:", e);
     } finally {
@@ -580,6 +721,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => { if (ready) saveToCache("subscriptions", subscriptions); }, [ready, subscriptions]);
   useEffect(() => { if (ready) saveToCache("buckets", buckets); }, [ready, buckets]);
   useEffect(() => { if (ready) saveToCache("bucketContributions", bucketContributions); }, [ready, bucketContributions]);
+  useEffect(() => { if (ready) saveToCache("householdStaff", householdStaff); }, [ready, householdStaff]);
+  useEffect(() => { if (ready) saveToCache("societyNotices", societyNotices); }, [ready, societyNotices]);
+  useEffect(() => { if (ready) saveToCache("householdReminders", householdReminders); }, [ready, householdReminders]);
+  useEffect(() => { if (ready) saveToCache("notificationSound", [notificationSound]); }, [ready, notificationSound]);
+  useEffect(() => { if (ready) localReplace("notes", notes); }, [ready, notes]);
   useEffect(() => {
     if (ready) {
       const catObjects = categories.filter((c) => !DEFAULT_CATEGORIES.includes(c)).map((c) => ({ id: c, name: c }));
@@ -610,120 +756,150 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setProperties([]);
         setCreditScore([]);
         setFraudAlerts([]);
+        setHouseholdStaff([]);
+        setSocietyNotices([]);
+        setHouseholdReminders([]);
+        setNotes([]);
         setReady(false);
-        // Clear local cache to prevent data leakage between sessions
-        clearCache();
+        // NOTE: device data is intentionally NOT erased on sign-out — it exists
+        // only on this device. A different account signing in triggers a wipe
+        // (claimDeviceFor in localDb.ts), so there is no data bleed.
+        clearQueue();
+
       }
     });
     return () => { sub.data.subscription.unsubscribe(); };
   }, []);
 
-  // Repayment reminder: surface a browser notification once per session for loans due within 2 days
-  useEffect(() => {
-    if (!ready || loans.length === 0) return;
-    if (typeof Notification === "undefined") return;
-    const showSoon = async () => {
+  // ── Optimistic offline-first helper ──────────────────────────────────────────
+  // Pattern:
+  //   1. Generate localId
+  //   2. Update React state immediately (instant UI)
+  //   3. If online  → call API in background, swap localId → serverId on success
+  //   4. If offline → enqueue op; drain runs on reconnect
+
+  const addTransaction = useCallback(async (t: Omit<Tx, "id">) => {
+    const localId = crypto.randomUUID();
+    const optimistic: Tx = { ...t, id: localId, createdAt: new Date().toISOString() };
+
+    feedback({
+      kind: t.type === "income" ? "income" : "expense",
+      title: t.type === "income" ? "Income added" : "Expense recorded",
+      amount: Math.abs(Number(t.amount) || 0),
+      subtitle: t.title || t.category,
+    });
+
+    // 1. Deduplicate check
+    const targetKey = txKey(t as Tx);
+    setTransactions((prev) => {
+      if (prev.find((x) => txKey(x) === targetKey)) return prev;
+      return dedupeList([optimistic, ...prev], txKey);
+    });
+
+    // 2. Background sync
+    if (WRITE_LOCALLY) {
       try {
-        if (Notification.permission === "default") {
-          await Notification.requestPermission();
-        }
-        if (Notification.permission !== "granted") return;
-        const today = new Date();
-        const soon = loans.filter((l) => {
-          if (l.settled) return false;
-          const d = new Date(l.repayBy);
-          const days = (d.getTime() - today.getTime()) / 86400000;
-          return days <= 2;
-        });
-        const seen = JSON.parse(sessionStorage.getItem("livesync-notified") || "[]");
-        for (const l of soon) {
-          if (seen.includes(l.id)) continue;
-          new Notification(`Repayment due — ${l.person}`, {
-            body: `${l.direction === "borrowed" ? "You owe" : "They owe you"} ₹${l.amount.toLocaleString("en-IN")} by ${l.repayBy}`,
-          });
-          seen.push(l.id);
-        }
-        sessionStorage.setItem("livesync-notified", JSON.stringify(seen));
+        // Same id on device as in memory — no id swap needed.
+        const created = await api.create<Tx>("transactions", { ...t, id: localId, createdAt: optimistic.createdAt });
+        setTransactions((prev) =>
+          dedupeList(prev.map((x) => x.id === localId ? created : x), txKey)
+        );
       } catch (e) {
-        console.warn("Notification permission/dispatch failed:", e);
+        console.error("addTransaction sync failed:", e);
+        // Optimistic item stays in UI; will retry on reload/reconnect
       }
-    };
-    showSoon();
-  }, [ready, loans]);
-
-  const addTransaction = async (t: Omit<Tx, "id">) => {
-    try {
-      const targetKey = txKey(t as Tx);
-      const existing = transactions.find((x) => txKey(x) === targetKey);
-      if (existing) {
-        console.warn("Transaction already exists:", existing);
-        return;
-      }
-      const created = await api.create<Tx>("transactions", t);
-      setTransactions((prev) => dedupeList([created, ...prev], txKey));
-    } catch (e) {
-      console.error("Add transaction failed:", e);
+    } else {
+      // Queue for later
+      const userId = await loadCachedUserId();
+      const payload = userId ? await encryptFields("transactions", t as any, userId).catch(() => t) : t;
+      await enqueueOp({ collection: "transactions", method: "create", payload: payload as any, localId });
     }
-  };
+  }, []);
 
-  const updateTransaction = async (t: Tx) => {
-    try {
-      const updated = await api.create<Tx>("transactions", t);
-      setTransactions((prev) => dedupeList(prev.map((x) => (x.id === t.id ? updated : x)), txKey));
+  const updateTransaction = useCallback(async (t: Tx) => {
+    // Optimistic update immediately
+    setTransactions((prev) => dedupeList(prev.map((x) => x.id === t.id ? t : x), txKey));
+    if (WRITE_LOCALLY) {
+      try {
+        const updated = await api.create<Tx>("transactions", t);
+        setTransactions((prev) => dedupeList(prev.map((x) => x.id === t.id ? updated : x), txKey));
+        return { ok: true };
+      } catch (e: any) {
+        console.error("updateTransaction failed:", e);
+        return { ok: false, error: e.message || "Update failed" };
+      }
+    } else {
+      const userId = await loadCachedUserId();
+      const payload = userId ? await encryptFields("transactions", t as any, userId).catch(() => t) : t;
+      await enqueueOp({ collection: "transactions", method: "create", payload: payload as any, localId: t.id });
       return { ok: true };
-    } catch (e: any) {
-      console.error("Update transaction failed:", e);
-      return { ok: false, error: e.message || "Update failed" };
     }
-  };
+  }, []);
 
-  const deleteTransaction = async (id: string) => {
-    try {
-      const target = transactions.find((x) => x.id === id);
-      await api.remove("transactions", id);
-      setTransactions((prev) => prev.filter((x) => x.id !== id && (!target || txKey(x) !== txKey(target))));
-      return { ok: true };
-    } catch (e: any) {
-      console.error("Delete transaction failed:", e);
-      return { ok: false, error: e.message || "Delete failed" };
-    }
-  };
-
-  const addLoan = async (l: Omit<Loan, "id">) => {
-    try {
-      const targetKey = loanKey(l as Loan);
-      const existing = loans.find((x) => loanKey(x) === targetKey);
-      if (existing) {
-        console.warn("Loan already exists:", existing);
-        return;
+  const deleteTransaction = useCallback(async (id: string) => {
+    // Optimistic remove immediately
+    setTransactions((prev) => prev.filter((x) => x.id !== id));
+    if (WRITE_LOCALLY) {
+      try {
+        await api.remove("transactions", id);
+        return { ok: true };
+      } catch (e: any) {
+        console.error("deleteTransaction failed:", e);
+        return { ok: false, error: e.message || "Delete failed" };
       }
-      const created = await api.create<Loan>("loans", l);
-      setLoans((prev) => dedupeList([created, ...prev], loanKey));
-    } catch (e) {
-      console.error("Add loan failed:", e);
+    } else {
+      await enqueueOp({ collection: "transactions", method: "remove", itemId: id });
+      return { ok: true };
     }
-  };
+  }, []);
 
-  const settleLoan = async (id: string) => {
-    const current = loans.find((l) => l.id === id);
-    if (!current) return;
-    try {
-      const updated = await api.create<Loan>("loans", { ...current, settled: true });
-      setLoans((prev) => prev.map((l) => (l.id === id ? updated : l)));
-    } catch (e) {
-      console.error("Settle loan failed:", e);
-    }
-  };
 
-  const removeLoan = async (id: string) => {
-    try {
-      const target = loans.find((x) => x.id === id);
-      await api.remove("loans", id);
-      setLoans((prev) => prev.filter((l) => l.id !== id && (!target || loanKey(l) !== loanKey(target))));
-    } catch (e) {
-      console.error("Remove loan failed:", e);
+  const addLoan = useCallback(async (l: Omit<Loan, "id">) => {
+    const localId = crypto.randomUUID();
+    const optimistic: Loan = { ...l, id: localId };
+    setLoans((prev) => {
+      if (prev.find((x) => loanKey(x) === loanKey(l as Loan))) return prev;
+      return dedupeList([optimistic, ...prev], loanKey);
+    });
+    if (WRITE_LOCALLY) {
+      try {
+        const created = await api.create<Loan>("loans", l);
+        setLoans((prev) => dedupeList(prev.map((x) => x.id === localId ? created : x), loanKey));
+      } catch (e) { console.error("addLoan sync failed:", e); }
+    } else {
+      const userId = await loadCachedUserId();
+      const payload = userId ? await encryptFields("loans", l as any, userId).catch(() => l) : l;
+      await enqueueOp({ collection: "loans", method: "create", payload: payload as any, localId });
     }
-  };
+  }, []);
+
+  const settleLoan = useCallback(async (id: string) => {
+    setLoans((prev) => prev.map((l) => l.id === id ? { ...l, settled: true } : l));
+    if (WRITE_LOCALLY) {
+      const current = await new Promise<Loan | undefined>((res) => {
+        setLoans((prev) => { res(prev.find((l) => l.id === id)); return prev; });
+      });
+      if (current) {
+        try {
+          const updated = await api.create<Loan>("loans", { ...current, settled: true });
+          setLoans((prev) => prev.map((l) => l.id === id ? updated : l));
+        } catch (e) { console.error("settleLoan sync failed:", e); }
+      }
+    } else {
+      await enqueueOp({ collection: "loans", method: "create",
+        payload: { id, settled: true } as any, localId: id });
+    }
+  }, []);
+
+  const removeLoan = useCallback(async (id: string) => {
+    setLoans((prev) => prev.filter((l) => l.id !== id));
+    if (WRITE_LOCALLY) {
+      try { await api.remove("loans", id); } catch (e) { console.error("removeLoan sync failed:", e); }
+    } else {
+      await enqueueOp({ collection: "loans", method: "remove", itemId: id });
+    }
+  }, []);
+
 
   const addStructuredLoan = async (l: Omit<StructuredLoan, "id">) => {
     try {
@@ -1054,36 +1230,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const addGoal = async (g: Omit<Goal, "id">) => {
-    try {
-      const targetKey = goalKey(g as Goal);
-      const existing = goals.find((x) => goalKey(x) === targetKey);
-      if (existing) return;
-      const created = await api.create<Goal>("goals", g);
-      setGoals((prev) => dedupeList([...prev, created], goalKey));
-    } catch (e) {
-      console.error("Add goal failed:", e);
+  const addGoal = useCallback(async (g: Omit<Goal, "id">) => {
+    const localId = crypto.randomUUID();
+    const optimistic: Goal = { ...g, id: localId };
+    setGoals((prev) => {
+      if (prev.find((x) => goalKey(x) === goalKey(g as Goal))) return prev;
+      return dedupeList([...prev, optimistic], goalKey);
+    });
+    if (WRITE_LOCALLY) {
+      try {
+        const created = await api.create<Goal>("goals", g);
+        setGoals((prev) => dedupeList(prev.map((x) => x.id === localId ? created : x), goalKey));
+      } catch (e) { console.error("addGoal sync failed:", e); }
+    } else {
+      const userId = await loadCachedUserId();
+      const payload = userId ? await encryptFields("goals", g as any, userId).catch(() => g) : g;
+      await enqueueOp({ collection: "goals", method: "create", payload: payload as any, localId });
     }
-  };
+  }, []);
 
-  const updateGoal = async (g: Goal) => {
-    try {
-      const updated = await api.create<Goal>("goals", g);
-      setGoals((prev) => dedupeList(prev.map((x) => x.id === g.id ? updated : x), goalKey));
-    } catch (e) {
-      console.error("Update goal failed:", e);
+  const updateGoal = useCallback(async (g: Goal) => {
+    setGoals((prev) => dedupeList(prev.map((x) => x.id === g.id ? g : x), goalKey));
+    if (WRITE_LOCALLY) {
+      try {
+        const updated = await api.create<Goal>("goals", g);
+        setGoals((prev) => dedupeList(prev.map((x) => x.id === g.id ? updated : x), goalKey));
+      } catch (e) { console.error("updateGoal sync failed:", e); }
+    } else {
+      const userId = await loadCachedUserId();
+      const payload = userId ? await encryptFields("goals", g as any, userId).catch(() => g) : g;
+      await enqueueOp({ collection: "goals", method: "create", payload: payload as any, localId: g.id });
     }
-  };
+  }, []);
 
-  const removeGoal = async (id: string) => {
-    try {
-      const target = goals.find((x) => x.id === id);
-      await api.remove("goals", id);
-      setGoals((prev) => prev.filter((x) => x.id !== id && (!target || goalKey(x) !== goalKey(target))));
-    } catch (e) {
-      console.error("Remove goal failed:", e);
+  const removeGoal = useCallback(async (id: string) => {
+    setGoals((prev) => prev.filter((x) => x.id !== id));
+    if (WRITE_LOCALLY) {
+      try { await api.remove("goals", id); } catch (e) { console.error("removeGoal sync failed:", e); }
+    } else {
+      await enqueueOp({ collection: "goals", method: "remove", itemId: id });
     }
-  };
+  }, []);
+
 
   const addBucket = async (b: Omit<Bucket, "id" | "status" | "savedAmount">): Promise<Bucket | undefined> => {
     try {
@@ -1141,26 +1329,64 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const addBucketContribution = async (bucketId: string, amount: number, note?: string, sourceAccountId?: string) => {
-    try {
-      const { data } = await api.session().then((s) => ({ data: { session: s } }));
-      const token = data.session?.access_token ?? "publicAnonKey";
-      const res = await fetch(`https://pnfdefqxkpnglbyzeqid.supabase.co/functions/v1/make-server-a3fe149f/buckets/${bucketId}/contributions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, note, sourceAccountId }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Contribution failed");
-      
-      const { item, bucket } = body;
-      setBucketContributions((prev) => dedupeList([item, ...prev], bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1)));
-      setBuckets((prev) => dedupeList(prev.map((x) => x.id === bucketId ? bucket : x), bucketKey));
-    } catch (e) {
-      console.error("Add bucket contribution failed:", e);
-      throw e;
+  const addBucketContribution = useCallback(async (bucketId: string, amount: number, note?: string, sourceAccountId?: string) => {
+    const userId = await api.getCurrentUserId();
+    const targetBucket = await new Promise<Bucket | undefined>((res) => {
+      // Read current bucket from state without triggering re-render
+      setBuckets((prev) => { res(prev.find((b) => b.id === bucketId)); return prev; });
+    });
+    if (!targetBucket) return;
+    const cleanBucket = await sanitizeBucket(targetBucket, userId);
+    const currentSaved = Number(cleanBucket.savedAmount) || 0;
+    const newSavedAmount = currentSaved + amount;
+    const targetNum = Number(cleanBucket.targetAmount) || 0;
+    const newStatus = targetNum > 0 && newSavedAmount >= targetNum ? "completed" : "active";
+    const updatedBucket: Bucket = {
+      ...cleanBucket, savedAmount: newSavedAmount, status: newStatus,
+      targetAmount: targetNum, updatedAt: new Date().toISOString(),
+    };
+    const now = new Date().toISOString();
+    const localContribId = crypto.randomUUID();
+    const newContrib: BucketContribution = {
+      id: localContribId, bucketId, amount,
+      note: note || "", sourceAccountId: sourceAccountId || undefined,
+      date: now, createdAt: now,
+    };
+
+    feedback({
+      kind: "saving",
+      title: newStatus === "completed" ? `🎉 ${cleanBucket.name} goal reached!` : `Saved to ${cleanBucket.name}`,
+      amount,
+      subtitle: targetNum > 0 ? `${Math.min(100, Math.round((newSavedAmount / targetNum) * 100))}% of goal` : undefined,
+    });
+
+    // Optimistic state update — instant
+    setBuckets((prev) => dedupeList(prev.map((x) => x.id === bucketId ? updatedBucket : x), bucketKey));
+    setBucketContributions((prev) =>
+      dedupeList([newContrib, ...prev], bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1))
+    );
+
+    if (WRITE_LOCALLY) {
+      try {
+        const [createdContrib, savedBucket] = await Promise.all([
+          api.create<BucketContribution>("bucketContributions", newContrib),
+          api.create<Bucket>("buckets", updatedBucket),
+        ]);
+        setBucketContributions((prev) =>
+          dedupeList(prev.map((x) => x.id === localContribId ? createdContrib : x), bucketContribKey)
+        );
+        setBuckets((prev) => dedupeList(prev.map((x) => x.id === bucketId ? savedBucket : x), bucketKey));
+      } catch (e) {
+        console.error("addBucketContribution sync failed:", e);
+      }
+    } else {
+      await enqueueOp({ collection: "bucketContributions", method: "create",
+        payload: newContrib as any, localId: localContribId });
+      await enqueueOp({ collection: "buckets", method: "create",
+        payload: updatedBucket as any, localId: bucketId });
     }
-  };
+  }, []);
+
 
   const addBudget = async (b: Omit<Budget, "id">) => {
     try {
@@ -1215,24 +1441,76 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const addHouseholdStaff = async (s: Omit<HouseholdStaff, "id">) => {
+    try {
+      const created = await api.create<HouseholdStaff>("householdStaff", s);
+      setHouseholdStaff((prev) => dedupeList([...prev, created], householdStaffKey));
+    } catch (e) { console.error("Add household staff failed:", e); }
+  };
+
+  const removeHouseholdStaff = async (id: string) => {
+    try {
+      await api.remove("householdStaff", id);
+      setHouseholdStaff((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) { console.error("Remove household staff failed:", e); }
+  };
+
+  const addSocietyNotice = async (n: Omit<SocietyNotice, "id">) => {
+    try {
+      const created = await api.create<SocietyNotice>("societyNotices", n);
+      setSocietyNotices((prev) => dedupeList([created, ...prev], societyNoticeKey));
+    } catch (e) { console.error("Add society notice failed:", e); }
+  };
+
+  const updateSocietyNotice = async (n: SocietyNotice) => {
+    try {
+      const updated = await api.create<SocietyNotice>("societyNotices", n);
+      setSocietyNotices((prev) => dedupeList(prev.map((x) => x.id === n.id ? updated : x), societyNoticeKey));
+    } catch (e) { console.error("Update society notice failed:", e); }
+  };
+
+  const removeSocietyNotice = async (id: string) => {
+    try {
+      await api.remove("societyNotices", id);
+      setSocietyNotices((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) { console.error("Remove society notice failed:", e); }
+  };
+
+  const addHouseholdReminder = async (r: Omit<HouseholdReminder, "id">) => {
+    try {
+      const created = await api.create<HouseholdReminder>("reminders", r);
+      setHouseholdReminders((prev) => dedupeList([...prev, created], householdReminderKey));
+    } catch (e) { console.error("Add household reminder failed:", e); }
+  };
+
+  const updateHouseholdReminder = async (r: HouseholdReminder) => {
+    try {
+      const updated = await api.create<HouseholdReminder>("reminders", r);
+      setHouseholdReminders((prev) => dedupeList(prev.map((x) => x.id === r.id ? updated : x), householdReminderKey));
+    } catch (e) { console.error("Update household reminder failed:", e); }
+  };
+
+  const removeHouseholdReminder = async (id: string) => {
+    try {
+      await api.remove("reminders", id);
+      setHouseholdReminders((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) { console.error("Remove household reminder failed:", e); }
+  };
+
+  const setNotificationSound = (s: string) => {
+    setNotificationSoundState(s);
+  };
+
   const deleteAllData = async () => {
     try {
       setReady(false);
-      const cols = ["transactions", "goals", "budgets", "subscriptions", "loans", "assets", "liabilities", "lifeEvents", "sips", "insurance", "investments", "gold", "properties", "creditScore", "fraudAlerts"];
-      // Get all items in parallel and delete them
-      await Promise.all(
-        cols.flatMap(async (col) => {
-          try {
-            const items = await api.list<{ id: string }>(col);
-            return items.map((item) => api.remove(col, item.id));
-          } catch (e) {
-            console.error(`Fetch/delete items failed for ${col}:`, e);
-            return [];
-          }
-        }).reduce((acc, val) => acc.concat(val as any), [] as Promise<any>[])
-      );
-      // Re-trigger remote seeding
-      await refresh();
+      await eraseAllUserData();
+      // Reset in-memory state to match the now-empty device database.
+      setTransactions([]); setGoals([]); setBudgets([]); setSubscriptions([]); setLoans([]);
+      setStructuredLoans([]); setCreditCards([]); setAssets([]); setLiabilities([]); setLifeEvents([]);
+      setCategories(DEFAULT_CATEGORIES); setSips([]); setInsurance([]); setInvestments([]); setGold([]);
+      setProperties([]); setCreditScore([]); setFraudAlerts([]); setHouseholdStaff([]); setSocietyNotices([]);
+      setHouseholdReminders([]); setBuckets([]); setBucketContributions([]); setNotes([]);
     } catch (e) {
       console.error("Delete all data failed:", e);
     } finally {
@@ -1240,11 +1518,56 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // ── Notes & bill reminders ─────────────────────────────────────────────
+  const notesRef = useRef<Note[]>([]);
+  notesRef.current = notes;
+  const upsertNote = useCallback(async (n: Partial<Note> & { id?: string }) => {
+    const now = new Date().toISOString();
+    const id = n.id || crypto.randomUUID();
+    const existing = notesRef.current.find((x) => x.id === id);
+    const saved = {
+      title: "", body: "", color: "default", pinned: false, archived: false, labels: [],
+      createdAt: now, ...(existing || {}), ...n, id, updatedAt: now,
+    } as Note;
+    notesRef.current = existing ? notesRef.current.map((x) => (x.id === id ? saved : x)) : [saved, ...notesRef.current];
+    setNotes((prev) => (prev.some((x) => x.id === id) ? prev.map((x) => (x.id === id ? saved : x)) : [saved, ...prev]));
+    return saved;
+  }, []);
+
+  const removeNote = useCallback(async (id: string) => {
+    setNotes((prev) => prev.filter((x) => x.id !== id));
+  }, []);
+
+  const payBill = useCallback(async (id: string, opts?: { amount?: number; logExpense?: boolean }) => {
+    const target = notesRef.current.find((x) => x.id === id);
+    if (!target) return;
+    const amount = opts?.amount ?? target.amount ?? 0;
+    setNotes((prev) => prev.map((x) => (x.id === id ? markBillPaid({ ...x, amount: amount || x.amount }) : x)));
+    if (opts?.logExpense !== false && amount > 0 && isBill(target)) {
+      // Logged silently; the bill-paid feedback below is the one the user sees.
+      const t: Omit<Tx, "id"> = {
+        title: target.title || "Bill payment",
+        category: target.category || "Other",
+        amount: -amount,
+        type: "expense",
+        date: todayISO(),
+        notes: "Paid from Notes & Reminders",
+      };
+      const created = await api.create<Tx>("transactions", t);
+      setTransactions((prev) => dedupeList([created, ...prev], txKey));
+    }
+    feedback({ kind: "bill-paid", title: `${target.title || "Bill"} paid`, amount: amount || undefined, subtitle: target.reminder?.repeat && target.reminder.repeat !== "none" ? "Next reminder scheduled" : "Moved to archive" });
+  }, []);
+
   return (
     <Ctx.Provider value={{
       ready, transactions, buckets, bucketContributions, goals, budgets, subscriptions, loans, structuredLoans, creditCards,
       assets, liabilities, lifeEvents, categories,
-      sips, insurance, investments, gold, properties, creditScore, fraudAlerts, selectedMonth, setSelectedMonth, deleteAllData,
+      sips, insurance, investments, gold, properties, creditScore, fraudAlerts,
+      householdStaff, societyNotices, householdReminders,
+      notes, upsertNote, removeNote, payBill,
+      notificationSound, setNotificationSound,
+      selectedMonth, setSelectedMonth, deleteAllData,
       addTransaction, updateTransaction, deleteTransaction, addLoan, settleLoan, removeLoan,
       addStructuredLoan, updateStructuredLoan, removeStructuredLoan,
       addCreditCard, updateCreditCard, removeCreditCard,
@@ -1252,7 +1575,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       upsertAsset, removeAsset, upsertLiability, removeLiability, upsertLifeEvent, removeLifeEvent,
       addSip, removeSip, addInsurance, removeInsurance, addInvestment, updateInvestment, removeInvestment,
       addGold, removeGold, addProperty, updateProperty, removeProperty, addCreditScore, addFraudAlert, resolveFraudAlert,
-      addGoal, updateGoal, removeGoal, addBucket, updateBucket, archiveBucket, removeBucket, addBucketContribution, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription, refresh
+      addGoal, updateGoal, removeGoal, addBucket, updateBucket, archiveBucket, removeBucket, addBucketContribution, addBudget, updateBudget, removeBudget, addSubscription, removeSubscription,
+      addHouseholdStaff, removeHouseholdStaff,
+      addSocietyNotice, updateSocietyNotice, removeSocietyNotice,
+      addHouseholdReminder, updateHouseholdReminder, removeHouseholdReminder,
+      refresh
     }}>
       {children}
     </Ctx.Provider>

@@ -6,6 +6,8 @@ export interface BannerPayload {
   body: string;
   /** Optional icon tint colour */
   tint?: string;
+  /** Optional action when the banner is tapped */
+  onClick?: () => void;
 }
 
 /** Global event target so native.ts can dispatch banner events without React coupling. */
@@ -45,7 +47,7 @@ export function InAppBanner() {
       timerRef.current = setTimeout(() => {
         setVisible(false);
         timerRef.current = null;
-      }, 4000);
+      }, payload.onClick ? 6000 : 4000);
     };
 
     bannerBus.addEventListener("show", handler);
@@ -63,7 +65,7 @@ export function InAppBanner() {
       style={{ top: 8 }}
     >
       <div
-        onClick={dismiss}
+        onClick={() => { data.onClick?.(); dismiss(); }}
         className="pointer-events-auto w-[92%] max-w-md cursor-pointer"
         style={{
           transform: visible ? "translateY(0)" : "translateY(-120%)",

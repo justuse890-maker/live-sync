@@ -9,7 +9,7 @@ const CONTACT_EMAIL = "niteshjha.uiux@yahoo.com";
 export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
   return (
     <>
-      <Header title="Privacy Policy" subtitle={`Last updated · ${LAST_UPDATED}`} showBack onBack={onBack} />
+      <Header title="Privacy Policy" subtitle={`Last updated · ${LAST_UPDATED}`} showBack onBack={onBack} right={<div className="size-8" />} />
       <Screen>
         <div className="px-5 pt-4 pb-8 space-y-5">
           {/* Hero */}

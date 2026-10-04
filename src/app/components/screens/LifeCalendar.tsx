@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
-  ArrowUpRight, ArrowDownRight, Repeat, Target, HandCoins, Calculator,
-  Receipt, ChevronLeft, ChevronRight, X,
+  ArrowDownLeft, ArrowUpRight, ArrowDownRight, Repeat, Target, HandCoins, Calculator,
+  Receipt, ChevronLeft, ChevronRight, X, Building2, CreditCard, Shield, Users, Bell,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Header, Screen } from "../Shell";
@@ -10,30 +10,46 @@ import { inr } from "../types";
 import { buildTimeline, TimelineEvent } from "../../lib/intelligence";
 
 const icons: Record<TimelineEvent["kind"], any> = {
-  income: ArrowUpRight, expense: ArrowDownRight, subscription: Repeat,
+  income: ArrowDownLeft, expense: ArrowUpRight, subscription: Repeat,
   goal: Target, loan: HandCoins, tax: Calculator, sip: Repeat, bill: Receipt,
+  emi: Building2, card_bill: CreditCard, insurance: Shield, staff_salary: Users, reminder: Bell,
 };
 const tints: Record<TimelineEvent["kind"], string> = {
   income: "#10B981", expense: "#64748B", subscription: "#F59E0B",
   goal: "#1E40AF", loan: "#8B5CF6", tax: "#EF4444", sip: "#0EA5E9", bill: "#F97316",
+  emi: "#DC2626", card_bill: "#D97706", insurance: "#2563EB", staff_salary: "#7C3AED", reminder: "#059669",
 };
 const labels: Record<TimelineEvent["kind"], string> = {
   income: "Income", expense: "Expense", subscription: "Subscription",
   goal: "Goal", loan: "Loan", tax: "Tax", sip: "SIP", bill: "Bill",
+  emi: "Loan EMI", card_bill: "Card Bill", insurance: "Insurance", staff_salary: "Staff Salary", reminder: "Reminder",
 };
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 
 export function LifeCalendar({ onBack }: { onBack: () => void }) {
-  const { transactions, subscriptions, goals, loans } = useStore();
+  const {
+    transactions, subscriptions, goals, buckets, loans,
+    structuredLoans, creditCards, sips, insurance,
+    householdStaff, householdReminders, societyNotices,
+  } = useStore();
   const today = new Date();
   const todayKey = isoDate(today);
   const [cursor, setCursor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const [selected, setSelected] = useState<string | null>(todayKey);
 
   const events = useMemo(
-    () => buildTimeline({ transactions, subscriptions, goals, loans, bills: [] }),
-    [transactions, subscriptions, goals, loans],
+    () => buildTimeline({
+      transactions, subscriptions, goals, buckets, loans,
+      structuredLoans, creditCards, sips, insurance,
+      householdStaff, householdReminders, societyNotices,
+      bills: [],
+    }),
+    [
+      transactions, subscriptions, goals, buckets, loans,
+      structuredLoans, creditCards, sips, insurance,
+      householdStaff, householdReminders, societyNotices,
+    ],
   );
 
   const byDate = useMemo(() => {
@@ -259,7 +275,8 @@ function buildMonthGrid(cursor: Date) {
 }
 
 function prettyDate(d: string) {
-  const date = new Date(d);
+  const [y, mo, dy] = d.split("-").map(Number);
+  const date = new Date(y, mo - 1, dy); // local date — avoids UTC-midnight timezone shift
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const days = Math.round((date.getTime() - today.getTime()) / 86400000);
   if (days === 0) return "Today";

@@ -1,0 +1,25 @@
+/* ── Micro-interactions & feedback animations ───────────────────────────── */
+@keyframes ls-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ls-pop { 0% { transform: scale(0.4); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes ls-bell { 0%,100% { transform: rotate(0); } 15% { transform: rotate(16deg); } 30% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 60% { transform: rotate(-6deg); } 75% { transform: rotate(3deg); } }
+@keyframes ls-check { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+@keyframes ls-ring { 0% { transform: scale(0.8); opacity: 0.6; } 100% { transform: scale(1.9); opacity: 0; } }
+@keyframes ls-shrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes ls-float-up { 0% { opacity: 0; transform: translateY(6px) scale(0.96); } 100% { opacity: 1; transform: none; } }
+@keyframes ls-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+.ls-rise { animation: ls-rise 0.32s cubic-bezier(.2,.8,.2,1) both; }
+.ls-pop { animation: ls-pop 0.35s cubic-bezier(.2,.8,.2,1) both; }
+.ls-bell-ring { animation: ls-bell 0.9s ease-in-out; transform-origin: 50% 0; }
+.ls-check path { stroke-dasharray: 30; animation: ls-check 0.45s 0.12s ease-out both; }
+.ls-ring::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: currentColor; animation: ls-ring 0.7s ease-out both; }
+.ls-shrink { transform-origin: left; animation: ls-shrink linear forwards; }
+.ls-skeleton { background: linear-gradient(90deg, #eef2f7 25%, #f8fafc 37%, #eef2f7 63%); background-size: 400% 100%; animation: ls-shimmer 1.4s ease infinite; }
+
+/* Every tappable thing gives a subtle press response */
+button:not(:disabled), [role="button"] { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled):active { transition: transform 80ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ls-rise, .ls-pop, .ls-bell-ring, .ls-check path, .ls-ring::after, .ls-shrink { animation: none !important; }
+}

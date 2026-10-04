@@ -76,7 +76,7 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
   }, []);
 
   const remove = async (id: string, name: string) => {
-    if (confirm(`Permanently delete "${name}" from your secure vault? This will erase both the record and the cloud storage file.`)) {
+    if (confirm(`Permanently delete "${name}" from your secure vault? This will erase the document from this phone.`)) {
       try {
         await api.remove("documents", id);
         setDocs((p) => p.filter((d) => d.id !== id));
@@ -115,7 +115,7 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <Header title="Document Vault" subtitle="Private cloud storage" showBack onBack={onBack} />
+      <Header title="Document Vault" subtitle="Stored only on this phone" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-4 pb-20">
           
@@ -126,12 +126,12 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
                 <ShieldCheck className="size-5" />
               </div>
               <div>
-                <div className="text-sm font-bold text-white">Private Cloud Vault</div>
-                <div className="text-[10px] text-slate-300">Authenticated access · short-lived preview links</div>
+                <div className="text-sm font-bold text-white">Private On-Device Vault</div>
+                <div className="text-[10px] text-slate-300">Never uploaded · opens only in this app</div>
               </div>
             </div>
             <p className="text-xs text-slate-300/90 leading-relaxed">
-              Uploaded files are stored in a <strong>non-public cloud bucket</strong>. The app requests access through an authenticated endpoint and creates a <strong>60-second signed preview link</strong>. Do not upload documents unless you are comfortable storing them with our cloud provider.
+              Documents you add are saved <strong>only in this phone's private app storage</strong> — they are never uploaded to any server. Keep a backup of important originals (for example in DigiLocker).
             </p>
             <a
               href="https://www.digilocker.gov.in/"
@@ -202,7 +202,7 @@ export function DocumentVault({ onBack }: { onBack: () => void }) {
             <div className="space-y-2 text-xs text-slate-600 leading-relaxed border-t border-border/40 pt-2.5">
               <div className="flex items-start gap-2">
                 <span className="font-bold text-slate-800 shrink-0">1. Storage Location:</span>
-                <span>Files are stored in a non-public Supabase Storage bucket and are served through authenticated application endpoints.</span>
+                <span>Files are stored only in this phone's private app storage and never leave the device.</span>
               </div>
 
               <div className="flex items-start gap-2">
@@ -563,7 +563,7 @@ function UploadSheet({
 
           <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 text-[11px] text-emerald-800 flex items-center gap-2">
             <Lock className="size-4 shrink-0 text-emerald-600" />
-            <span>Files are uploaded to private cloud storage. This upload flow does not send file contents to the app's AI endpoints.</span>
+            <span>Files are saved only on this phone. They are never uploaded or sent to AI.</span>
           </div>
 
           {err && <div className="text-xs text-rose-600 bg-rose-50 rounded-xl p-2.5 border border-rose-200">{err}</div>}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { todayISO } from "../../lib/dateUtils";
 import {
   Banknote, Plus, Loader2, AlertTriangle, Mic, MicOff, Check, X,
   ArrowDownToLine, Scale, Wallet, Users, Trash2, Sparkles,
@@ -569,5 +570,5 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 
 function today() {
-  return new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+  return todayISO();
 }

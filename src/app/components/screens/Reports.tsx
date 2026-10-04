@@ -18,6 +18,7 @@ import {
   TrendingDown,
   ChevronLeft,
   ChevronRight,
+  ArrowDownLeft,
   ArrowUpRight,
   ArrowDownRight,
   Wallet,
@@ -41,7 +42,7 @@ import {
   X,
 } from "lucide-react";
 import { Header, Screen } from "../Shell";
-import { inr } from "../types";
+import { inr, ScreenId } from "../types";
 import { useStore, Tx } from "../../store";
 import {
   getMonthKey,
@@ -327,7 +328,7 @@ export function Reports({ onBack, go }: { onBack: () => void; go?: (id: ScreenId
           <div className="grid grid-cols-3 gap-2.5">
             <div className="bg-emerald-50/80 border border-emerald-100 rounded-2xl p-3 shadow-sm">
               <div className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
-                <ArrowUpRight className="size-3.5" />
+                <ArrowDownLeft className="size-3.5" />
                 <span>Inflow</span>
               </div>
               <div className="font-display text-emerald-950 mt-1" style={{ fontSize: 15, fontWeight: 700 }}>
@@ -338,7 +339,7 @@ export function Reports({ onBack, go }: { onBack: () => void; go?: (id: ScreenId
 
             <div className="bg-rose-50/80 border border-rose-100 rounded-2xl p-3 shadow-sm">
               <div className="flex items-center gap-1 text-[11px] font-semibold text-rose-700">
-                <ArrowDownRight className="size-3.5" />
+                <ArrowUpRight className="size-3.5" />
                 <span>Outflow</span>
               </div>
               <div className="font-display text-rose-950 mt-1" style={{ fontSize: 15, fontWeight: 700 }}>

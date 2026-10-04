@@ -1,4 +1,4 @@
-export const APP_VERSION = "2.2.0";
+export const APP_VERSION = "2.4.0";
 
 // AI Coach suggestion prompts — used to populate the coach screen with starter questions
 export const coachSuggestions = [

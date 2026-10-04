@@ -8,8 +8,7 @@ import { getGoogleWebClientId, GOOGLE_CONFIGURATION_ERROR } from "../lib/googleA
 import { investorDemoCredentials, isInvestorDemo } from "../lib/demo";
 
 export function Auth({ onAuthed }: { onAuthed: () => void }) {
-  const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
-  const [name, setName] = useState("");
+  const [mode, setMode] = useState<"signin" | "forgot">("signin");
   const [email, setEmail] = useState(isInvestorDemo ? investorDemoCredentials.email : "");
   const [password, setPassword] = useState(isInvestorDemo ? investorDemoCredentials.password : "");
   const [loading, setLoading] = useState(false);
@@ -57,48 +56,14 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
     return msg;
   };
 
-  // ── Consent checkboxes (only used during signup) ──
-  const [agreeTerms, setAgreeTerms] = useState(false);
-  const [agreeAI, setAgreeAI] = useState(false);
-
-  const canSubmit =
-    mode === "signup"
-      ? !!email && !!password && agreeTerms // T&C is mandatory; AI is optional
-      : mode === "forgot"
-        ? !!email
-        : !!email && !!password;
+  const canSubmit = mode === "forgot" ? !!email : !!email && !!password;
 
   const submit = async () => {
     setErr(null);
     setSuccess(null);
     setLoading(true);
     try {
-      if (mode === "signup") {
-        await api.signup(email, password, name || email.split("@")[0]);
-        await api.signin(email, password);
-
-        // Store consent records so they appear in Privacy & Data screen
-        const now = new Date().toISOString();
-        try {
-          await api.create("settings", {
-            id: "consent-terms",
-            type: "terms",
-            agreedAt: now,
-            version: "2026-07-17",
-          });
-          if (agreeAI) {
-            await api.create("settings", {
-              id: "consent-ai",
-              type: "ai-consent",
-              agreedAt: now,
-              version: "2026-07-17",
-              acknowledged: "AI data processing has inherent risks; no absolute security guaranteed.",
-            });
-          }
-        } catch { /* non-blocking — consent display is nice-to-have */ }
-
-        onAuthed();
-      } else if (mode === "signin") {
+      if (mode === "signin") {
         await api.signin(email, password);
         onAuthed();
       } else if (mode === "forgot") {
@@ -114,11 +79,6 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
   };
 
   const handleGoogleSignIn = async () => {
-    if (mode === "signup" && !agreeTerms) {
-      setErr("Please agree to the Terms & Conditions and Privacy Policy before creating an account.");
-      return;
-    }
-
     try {
       setLoading(true);
       setErr(null);
@@ -215,14 +175,11 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
       )}
 
       <div className="space-y-3">
-        {mode === "signup" && (
-          <Field label="Name" value={name} onChange={setName} placeholder="Aarav Sharma" />
-        )}
         <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" />
         {mode !== "forgot" && (
           <div>
             <Field label="Password" value={password} onChange={setPassword} placeholder="••••••••" type="password" />
-            {!isInvestorDemo && mode === "signin" && (
+            {!isInvestorDemo && (
               <div className="mt-2 text-right">
                 <button onClick={() => { setMode("forgot"); setErr(null); setSuccess(null); }} className="text-xs text-primary" style={{ fontWeight: 600 }}>Forgot password?</button>
               </div>
@@ -230,36 +187,6 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
           </div>
         )}
       </div>
-
-      {/* ── Consent checkboxes (only on signup) ── */}
-      {mode === "signup" && (
-        <div className="mt-5 space-y-3">
-          {/* Mandatory: T&C + Privacy Policy */}
-          <ConsentCheckbox
-            checked={agreeTerms}
-            onChange={setAgreeTerms}
-            required
-          >
-            I agree to the{" "}
-            <a href="#/terms" className="text-primary underline" style={{ fontWeight: 600 }}>Terms & Conditions</a>{" "}
-            and{" "}
-            <a href="#/privacy-policy" className="text-primary underline" style={{ fontWeight: 600 }}>Privacy Policy</a>.
-          </ConsentCheckbox>
-
-          {/* Optional but important: AI consent */}
-          <ConsentCheckbox
-            checked={agreeAI}
-            onChange={setAgreeAI}
-          >
-            <span>
-              I consent to AI-powered features processing my financial data.{" "}
-              <span className="text-muted-foreground">
-                We implement reasonable administrative, technical, and organizational safeguards to protect user information. However, no digital platform or AI service can guarantee absolute security or error-free operation. By choosing to use AI-powered features, you acknowledge these inherent limitations and consent to the processing of your information as described in our Privacy Policy. This is optional — you can change this later in Settings.
-              </span>
-            </span>
-          </ConsentCheckbox>
-        </div>
-      )}
 
       {err && <div className="mt-3 text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-xl p-3 leading-relaxed">{err}</div>}
       {success && (
@@ -281,19 +208,20 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
         style={{ fontWeight: 700 }}
       >
         {loading && <Loader2 className="size-4 animate-spin" />}
-        {isInvestorDemo ? "Open investor demo" : mode === "signup" ? "Create account" : mode === "forgot" ? (success ? "Resend link" : "Send reset link") : "Sign in"}
+        {isInvestorDemo ? "Open investor demo" : mode === "forgot" ? (success ? "Resend link" : "Send reset link") : "Sign in"}
       </button>
 
-      {!isInvestorDemo && <button
-        onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setErr(null); setSuccess(null); }}
-        className="mt-4 text-sm text-muted-foreground"
-      >
-        {mode === "signup" ? "Already have an account? " : mode === "forgot" ? "Remember your password? " : "New here? "}
-        <span className="text-primary" style={{ fontWeight: 600 }}>
-          {mode === "signup" || mode === "forgot" ? "Sign in" : "Create account"}
-        </span>
-      </button>
-      }
+      {!isInvestorDemo && mode === "forgot" && (
+        <button
+          onClick={() => { setMode("signin"); setErr(null); setSuccess(null); }}
+          className="mt-4 text-sm text-muted-foreground"
+        >
+          Remember your password?{" "}
+          <span className="text-primary" style={{ fontWeight: 600 }}>
+            Sign in
+          </span>
+        </button>
+      )}
 
       <div className="mt-auto pt-8 text-center text-[11px] text-muted-foreground leading-relaxed">
         By continuing you agree to LiveSync's{" "}
@@ -317,29 +245,5 @@ function Field({ label, value, onChange, placeholder, type = "text" }: { label: 
         className="mt-1 w-full bg-card border border-border rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
       />
     </label>
-  );
-}
-
-function ConsentCheckbox({ checked, onChange, required, children }: { checked: boolean; onChange: (v: boolean) => void; required?: boolean; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      className="w-full flex items-start gap-3 text-left"
-    >
-      <div
-        className={`mt-0.5 size-5 shrink-0 rounded-md border-2 flex items-center justify-center transition-all duration-150 ${
-          checked
-            ? "bg-primary border-primary"
-            : "border-border bg-card"
-        }`}
-      >
-        {checked && <Check className="size-3 text-primary-foreground" strokeWidth={3} />}
-      </div>
-      <div className="text-[11px] leading-relaxed text-foreground">
-        {children}
-        {required && <span className="text-rose-500 ml-0.5">*</span>}
-      </div>
-    </button>
   );
 }

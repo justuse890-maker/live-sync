@@ -29,20 +29,20 @@ export function Header({ title, subtitle, showBack, onBack, right }: Omit<Props,
   }, []);
 
   return (
-    <div className="sticky top-0 z-20 bg-background/90 backdrop-blur-lg border-b border-border">
-      <div className="px-5 pt-4 pb-4 flex items-center gap-3">
+    <div className="sticky top-0 z-20 bg-background/92 backdrop-blur-lg">
+      <div className="px-5 pt-5 pb-3 flex items-center gap-3">
         {showBack ? (
           <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-muted">
             <ChevronLeft className="size-5" />
           </button>
         ) : (
           <Avatar className="size-10">
-            <AvatarFallback className="bg-primary text-primary-foreground">{initials}</AvatarFallback>
+            <AvatarFallback className="bg-primary/10 text-primary">{initials}</AvatarFallback>
           </Avatar>
         )}
         <div className="flex-1 min-w-0">
-          {subtitle && <div className="text-xs text-muted-foreground">{subtitle}</div>}
-          <h1 className="truncate" style={{ fontSize: 20, fontWeight: 700 }}>{title}</h1>
+          {subtitle && <div className="text-xs text-muted-foreground mb-0.5" style={{ fontWeight: 500 }}>{subtitle}</div>}
+          <h1 className="truncate tracking-[-0.035em]" style={{ fontSize: showBack ? 20 : 28, fontWeight: 750, lineHeight: 1.15 }}>{title}</h1>
         </div>
         {right ?? <NotificationBell />}
       </div>

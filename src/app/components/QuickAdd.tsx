@@ -1,8 +1,22 @@
 import { useMemo, useState, useEffect } from "react";
-import { X, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2, Plus, Banknote, Smartphone, CreditCard, Wallet, MoreHorizontal, Trash2, Pencil, Mic, Camera, Info } from "lucide-react";
+import { todayISO } from "../lib/dateUtils";
+import { X, ArrowDownLeft, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2, Plus, Banknote, Smartphone, CreditCard, Wallet, MoreHorizontal, Trash2, Pencil, Mic, Camera, Info, Home, Car, User, GraduationCap, Building2, Check } from "lucide-react";
 import { PaymentMode, PaymentSplit, useStore } from "../store";
+import { inr } from "./types";
 import { CaptureVoiceScan } from "./CaptureVoiceScan";
-import { hapticSuccess, hapticLight } from "../lib/native";
+import { hapticLight } from "../lib/native";
+import { feedback } from "../lib/feedback";
+import { numberToIndianWords, sanitizeAmountInput, validateTransactionAmount } from "../lib/currencyUtils";
+
+const loanTypeIcons: Record<string, { label: string; icon: any; color: string }> = {
+  home_loan:             { label: "Home Loan",            icon: Home,           color: "#1E40AF" },
+  car_loan:              { label: "Car Loan",              icon: Car,            color: "#0891B2" },
+  personal_loan:         { label: "Personal Loan",         icon: User,           color: "#7C3AED" },
+  education_loan:        { label: "Education Loan",        icon: GraduationCap,  color: "#059669" },
+  property_registration: { label: "Property Registration", icon: Building2,      color: "#D97706" },
+  builder_demand:        { label: "Builder Demand",        icon: Building2,      color: "#DC2626" },
+  other:                 { label: "Other Loan",            icon: CreditCard,     color: "#64748B" },
+};
 
 const paymentMeta: Record<PaymentMode, { label: string; icon: any; tint: string }> = {
   cash:   { label: "Cash",   icon: Banknote,         tint: "#10B981" },
@@ -14,13 +28,16 @@ const paymentMeta: Record<PaymentMode, { label: string; icon: any; tint: string 
 const paymentOrder: PaymentMode[] = ["cash", "upi", "credit", "debit", "other"];
 
 export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { addTransaction, categories, addCategory, creditCards } = useStore();
+  const { addTransaction, categories, addCategory, creditCards, structuredLoans, properties } = useStore();
   const [tab, setTab] = useState<"manual" | "voice" | "scan">("manual");
   const [type, setType] = useState<"expense" | "income" | "transfer">("expense");
   const [amount, setAmount] = useState("");
   const [cat, setCat] = useState("Food");
   const [merchant, setMerchant] = useState("");
   const [notes, setNotes] = useState("");
+  const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
+  const [loanPaymentType, setLoanPaymentType] = useState<"emi" | "prepayment">("emi");
+  const [loanTypeFilter, setLoanTypeFilter] = useState<string>("all");
   const [singleMode, setSingleMode] = useState<PaymentMode>("upi");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [splitOn, setSplitOn] = useState(false);
@@ -30,6 +47,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
   const [saving, setSaving] = useState(false);
 
   const total = Number(amount || 0);
+  const amountValidation = useMemo(() => validateTransactionAmount(total, splitOn ? undefined : singleMode), [total, splitOn, singleMode]);
   const splitTotal = useMemo(() => splits.reduce((s, p) => s + (Number(p.amount) || 0), 0), [splits]);
   const splitOk = !splitOn || (total > 0 && Math.abs(splitTotal - total) < 0.01);
 
@@ -54,35 +72,55 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
     setSplitOn(false); setSplits([{ mode: "cash", amount: 0 }, { mode: "upi", amount: 0 }]);
     setNewCat(""); setShowNewCat(false);
     setSelectedCardId(null);
+    setSelectedLoanId(null);
+    setLoanPaymentType("emi");
+    setLoanTypeFilter("all");
   };
 
   const save = async () => {
-    if (!amount || !splitOk || saving) return;
-    setSaving(true);
-    try {
-      const isIncome = type === "income";
-      const payments: PaymentSplit[] = isIncome
-        ? []
-        : splitOn
-          ? splits.filter((s) => s.amount > 0)
-          : [{ mode: singleMode, amount: total }];
-      await addTransaction({
-        title: (merchant || (isIncome ? "Income" : cat)).trim(),
-        category: isIncome ? "Income" : cat,
-        amount: isIncome ? total : -total,
-        type: isIncome ? "income" : "expense",
-        date: new Date().toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
-        merchant: merchant ? merchant.trim() : undefined,
-        payments: payments.length ? payments : undefined,
-        creditCardId: (!isIncome && !splitOn && singleMode === "credit" && selectedCardId) ? selectedCardId : undefined,
-        notes: notes ? notes.trim() : undefined,
+    if (saving) return;
+    if (!amount || !splitOk || !amountValidation.valid) {
+      feedback({
+        kind: "error",
+        title: !amount ? "Enter an amount" : !splitOk ? "Split doesn't add up" : "Check the amount",
+        subtitle: !amount ? "Type how much you spent or received" : !splitOk ? "Payment split must equal the total" : undefined,
       });
-      hapticSuccess();
-      reset();
-      onClose();
-    } finally {
-      setSaving(false);
+      return;
     }
+    setSaving(true);
+    const isIncome = type === "income";
+    const payments: PaymentSplit[] = isIncome
+      ? []
+      : splitOn
+        ? splits.filter((s) => s.amount > 0)
+        : [{ mode: singleMode, amount: total }];
+
+    const linkedLoan = selectedLoanId ? structuredLoans.find((l) => l.id === selectedLoanId) : null;
+    const defaultTitle = isIncome
+      ? "Income"
+      : linkedLoan
+      ? `${linkedLoan.lenderName} ${loanPaymentType === "prepayment" ? "Prepayment" : "EMI"}`
+      : cat;
+
+    // Fire save — optimistic, so this resolves immediately in memory
+    addTransaction({
+      title: (merchant || defaultTitle).trim(),
+      category: isIncome ? "Income" : cat,
+      amount: isIncome ? total : -total,
+      type: isIncome ? "income" : "expense",
+      date: todayISO(),
+      merchant: merchant ? merchant.trim() : undefined,
+      payments: payments.length ? payments : undefined,
+      creditCardId: (!isIncome && !splitOn && singleMode === "credit" && selectedCardId) ? selectedCardId : undefined,
+      loanId: (!isIncome && (cat === "EMI" || selectedLoanId)) ? (selectedLoanId || undefined) : undefined,
+      loanPaymentType: (!isIncome && selectedLoanId) ? loanPaymentType : undefined,
+      notes: notes ? notes.trim() : undefined,
+    }).catch(() => {}); // errors handled in store
+
+    // Tone + haptic + animated confirmation are fired by the store (feedback.ts)
+    reset();
+    setSaving(false);
+    onClose(); // saved on-device instantly — no server round-trip
   };
 
   const handleAddCategory = async () => {
@@ -130,8 +168,8 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
         {tab === "manual" && <>
         <div className="bg-muted rounded-xl p-1 flex mb-4">
           {[
-            { id: "expense", label: "Expense", icon: ArrowDownRight },
-            { id: "income", label: "Income", icon: ArrowUpRight },
+            { id: "expense", label: "Expense", icon: ArrowUpRight },
+            { id: "income", label: "Income", icon: ArrowDownLeft },
             { id: "transfer", label: "Transfer", icon: ArrowLeftRight },
           ].map((t) => (
             <button
@@ -147,20 +185,42 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
           ))}
         </div>
 
-        <div className="bg-muted/60 rounded-2xl p-5 text-center mb-4">
-          <div className="text-xs text-muted-foreground mb-1">Amount</div>
-          <div className="flex items-center justify-center gap-2">
-            <span className="font-display text-muted-foreground" style={{ fontSize: 24 }}>₹</span>
+        <div className="bg-muted/60 rounded-2xl p-4 text-center mb-4 overflow-hidden">
+          <div className="text-xs text-muted-foreground mb-1 font-semibold">Amount</div>
+          <div className="flex items-center justify-center gap-1.5 max-w-full px-2">
+            <span className="font-display text-muted-foreground text-2xl font-bold">₹</span>
             <input
               autoFocus
               inputMode="decimal"
+              maxLength={12}
               value={amount}
-              onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+              onChange={(e) => setAmount(sanitizeAmountInput(e.target.value))}
               placeholder="0"
-              className="bg-transparent outline-none w-40 text-center font-display"
-              style={{ fontSize: 32, fontWeight: 700 }}
+              className="bg-transparent outline-none text-center font-display font-bold w-full max-w-[260px] tracking-tight text-foreground"
+              style={{ fontSize: amount.length > 7 ? 22 : amount.length > 5 ? 26 : 32, fontWeight: 700 }}
             />
           </div>
+
+          {/* Live Indian Numbering Words Preview like CRED & PhonePe */}
+          {total > 0 && (
+            <div className="mt-2 text-xs font-semibold text-emerald-700 bg-emerald-50/90 border border-emerald-200/70 rounded-xl px-3 py-1 inline-block max-w-full truncate animate-in fade-in duration-150">
+              {numberToIndianWords(total)}
+            </div>
+          )}
+
+          {/* IT Act Sec 269ST Cash Warning / High Value Warning */}
+          {amountValidation.warning && (
+            <div className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded-xl p-2 text-center font-medium leading-tight">
+              {amountValidation.warning}
+            </div>
+          )}
+
+          {/* Regulatory Limit Error (Retail Cap) */}
+          {amountValidation.error && Boolean(amount) && (
+            <div className="mt-2 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-2 text-center font-medium leading-tight">
+              {amountValidation.error}
+            </div>
+          )}
         </div>
 
         {type !== "transfer" && (
@@ -205,6 +265,195 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
                 </div>
               )}
             </Field>
+
+            {/* Loan / EMI selector when category is EMI or loan is selected */}
+            {cat === "EMI" && (
+              <Field
+                label="Select Loan / EMI"
+                rightSlot={
+                  selectedLoanId ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedLoanId(null)}
+                      className="text-xs text-rose-500 font-semibold hover:underline"
+                    >
+                      Clear
+                    </button>
+                  ) : null
+                }
+              >
+                {structuredLoans.length === 0 ? (
+                  <div className="p-3.5 rounded-2xl bg-amber-50/80 border border-amber-200/70 text-xs text-amber-900 space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                      <Home className="size-4 text-amber-600" /> No loans added yet
+                    </div>
+                    <div className="text-[11px] text-amber-700 leading-relaxed">
+                      Track your Home Loan, Car Loan, or other EMIs by adding them in the <strong>Loans &amp; EMI Tracker</strong>.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {/* Filter tabs if user has multiple types of loans */}
+                    <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                      <button
+                        type="button"
+                        onClick={() => setLoanTypeFilter("all")}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                          loanTypeFilter === "all" ? "bg-primary text-primary-foreground shadow-xs" : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        All ({structuredLoans.length})
+                      </button>
+                      {structuredLoans.some((l) => l.loanType === "home_loan") && (
+                        <button
+                          type="button"
+                          onClick={() => setLoanTypeFilter("home_loan")}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition flex items-center gap-1 ${
+                            loanTypeFilter === "home_loan" ? "bg-primary text-primary-foreground shadow-xs" : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          <Home className="size-3" /> Home Loans
+                        </button>
+                      )}
+                      {structuredLoans.some((l) => l.loanType === "car_loan") && (
+                        <button
+                          type="button"
+                          onClick={() => setLoanTypeFilter("car_loan")}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition flex items-center gap-1 ${
+                            loanTypeFilter === "car_loan" ? "bg-primary text-primary-foreground shadow-xs" : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          <Car className="size-3" /> Car Loans
+                        </button>
+                      )}
+                      {structuredLoans.some((l) => l.loanType !== "home_loan" && l.loanType !== "car_loan") && (
+                        <button
+                          type="button"
+                          onClick={() => setLoanTypeFilter("other")}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                            loanTypeFilter === "other" ? "bg-primary text-primary-foreground shadow-xs" : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          Other
+                        </button>
+                      )}
+                    </div>
+
+                    {/* List of loans */}
+                    <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                      {structuredLoans
+                        .filter((loan) => {
+                          if (loanTypeFilter === "all") return true;
+                          if (loanTypeFilter === "other") return loan.loanType !== "home_loan" && loan.loanType !== "car_loan";
+                          return loan.loanType === loanTypeFilter;
+                        })
+                        .map((loan) => {
+                          const isSelected = selectedLoanId === loan.id;
+                          const cfg = loanTypeIcons[loan.loanType] || loanTypeIcons.other;
+                          const Icon = cfg.icon;
+                          const linkedProp = properties.find((p) => p.id === loan.linkedPropertyId);
+
+                          return (
+                            <button
+                              key={loan.id}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedLoanId(null);
+                                } else {
+                                  setSelectedLoanId(loan.id);
+                                  if (!amount) setAmount(String(loan.emiAmount));
+                                  if (!merchant) setMerchant(loan.lenderName);
+                                }
+                              }}
+                              className={`p-3 rounded-2xl border text-left transition flex items-start justify-between gap-3 ${
+                                isSelected
+                                  ? "border-primary bg-primary/5 shadow-xs ring-1 ring-primary"
+                                  : "border-border/70 bg-card hover:bg-muted/40"
+                              }`}
+                            >
+                              <div className="flex items-start gap-3 min-w-0">
+                                <div
+                                  className="size-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
+                                  style={{ backgroundColor: `${cfg.color}18`, color: cfg.color }}
+                                >
+                                  <Icon className="size-4" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-xs font-bold text-foreground truncate">
+                                      {loan.lenderName}
+                                    </span>
+                                    <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded-md bg-muted text-muted-foreground">
+                                      {cfg.label}
+                                    </span>
+                                  </div>
+
+                                  {/* If Home Loan has linked property, show it! */}
+                                  {linkedProp && (
+                                    <div className="text-[11px] font-semibold text-indigo-600 flex items-center gap-1 mt-0.5 truncate">
+                                      <Building2 className="size-3 shrink-0" />
+                                      <span>{linkedProp.name}</span>
+                                    </div>
+                                  )}
+
+                                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                                    EMI: <strong className="text-foreground">{inr(loan.emiAmount)}/mo</strong> · {loan.interestRatePA}% p.a.
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col items-end gap-1 shrink-0">
+                                <div
+                                  className={`size-5 rounded-full border-2 flex items-center justify-center transition ${
+                                    isSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/30"
+                                  }`}
+                                >
+                                  {isSelected && <Check className="size-3 stroke-[3]" />}
+                                </div>
+                                <span className="text-[10px] text-muted-foreground">
+                                  Due {loan.nextEmiDueDate?.slice(8, 10) || "monthly"}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                    </div>
+
+                    {/* Payment type selector if loan is selected */}
+                    {selectedLoanId && (
+                      <div className="bg-muted/50 rounded-xl p-2.5 flex items-center justify-between gap-2 border border-border/50">
+                        <div className="text-xs font-semibold text-muted-foreground">Payment Type:</div>
+                        <div className="flex gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setLoanPaymentType("emi")}
+                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                              loanPaymentType === "emi"
+                                ? "bg-primary text-primary-foreground shadow-xs"
+                                : "bg-card text-foreground border border-border/60"
+                            }`}
+                          >
+                            Regular EMI
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setLoanPaymentType("prepayment")}
+                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                              loanPaymentType === "prepayment"
+                                ? "bg-amber-600 text-white shadow-xs"
+                                : "bg-card text-foreground border border-border/60"
+                            }`}
+                          >
+                            Part Pre-payment
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Field>
+            )}
 
             {type === "expense" && (
               <Field
@@ -311,12 +560,12 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
 
         <button
           onClick={save}
-          disabled={!amount || saving || !splitOk}
-          className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 flex items-center justify-center gap-2 mt-1 active:scale-[0.97] transition-transform duration-150"
+          disabled={saving}
+          className={`w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-40 ${!amount || !splitOk || !amountValidation.valid ? "opacity-50" : ""} flex items-center justify-center gap-2 mt-1 active:scale-[0.97] transition-transform duration-150`}
           style={{ fontWeight: 700 }}
         >
           {saving && <Loader2 className="size-4 animate-spin" />}
-          Save {type}
+          {type === "income" ? "Save income" : type === "transfer" ? "Save transfer" : "Save expense"}
         </button>
         </>}
       </div>

@@ -1,13 +1,15 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert, Scale, Phone, Cloud, ArrowRightLeft, Crown, Zap } from "lucide-react";
+import { StickyNote, ChevronRight, Shield, Bell, CreditCard, FileText, HelpCircle, LogOut, Activity, PiggyBank, Receipt, BarChart3, Wallet, Calculator, FolderLock, HandCoins, Tag, Droplets, Flame, Sparkles, TrendingUp, Calendar, Upload, MessageSquare, Users, Banknote, Coins, Home, Award, ShieldAlert, Scale, Phone, Cloud, ArrowRightLeft, Crown, Zap, Globe } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { inr, ScreenId } from "../types";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
-import { netWorth } from "../../lib/intelligence";
+import { computeSnapshot } from "../../lib/snapshot";
+import { getCurrentMonthKey } from "../../lib/dateUtils";
 import { APP_VERSION } from "../../data";
 import { useEntitlements } from "../../lib/useEntitlements";
+import { useTranslation } from "../../lib/i18n";
 
 const wealth: { id: ScreenId; label: string; icon: any; tint: string }[] = [
   { id: "networth",  label: "Net Worth Command Center",     icon: Wallet,     tint: "#1E40AF" },
@@ -24,6 +26,7 @@ const wealth: { id: ScreenId; label: string; icon: any; tint: string }[] = [
 ];
 
 const more: { id: ScreenId; label: string; icon: any; tint: string }[] = [
+  { id: "notes", label: "Notes & Bill Reminders", icon: StickyNote, tint: "#F59E0B" },
   { id: "health", label: "Financial Health", icon: Activity, tint: "#1E40AF" },
   { id: "budgets", label: "Budgets", icon: PiggyBank, tint: "#10B981" },
   { id: "subscriptions", label: "Subscription Shield", icon: Receipt, tint: "#F59E0B" },
@@ -51,6 +54,7 @@ const settings: { label: string; icon: any; id?: ScreenId }[] = [
   { label: "Privacy & Data", icon: FileText, id: "privacy" },
   { label: "Data Safety & Account", icon: Shield, id: "data-safety" },
   { label: "Cloud Backup", icon: Cloud, id: "cloud-backup" },
+  { label: "Language", icon: Globe, id: "language-settings" },
   { label: "Send feedback", icon: MessageSquare, id: "feedback" },
   { label: "Help & Support", icon: HelpCircle },
 ];
@@ -66,8 +70,8 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
   const [userEmail, setUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
   const [signOutConfirm, setSignOutConfirm] = useState(false);
-  const { transactions, assets, liabilities } = useStore();
-  const { isLifetime, isPaid, inTrial } = useEntitlements();
+  const { isLifetime, isPaid, inTrial, isPromoUser, promoDaysLeft } = useEntitlements();
+  const { t, langMeta } = useTranslation();
 
   useEffect(() => {
     (async () => {
@@ -84,32 +88,18 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
     })();
   }, []);
 
-  const nw = useMemo(() => netWorth(assets, liabilities), [assets, liabilities]);
-
-  const healthScore = useMemo(() => {
-    const monthlyIncome = transactions.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
-    const monthlyExpenses = transactions.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
-    let score = 50;
-    if (monthlyIncome > 0) {
-      const savingsRate = (monthlyIncome - monthlyExpenses) / monthlyIncome;
-      score += Math.min(20, savingsRate * 60);
-    }
-    if (nw.netWorth > 0) score += 10;
-    return Math.min(100, Math.round(score));
-  }, [transactions, nw]);
-
-  const emergencyMonths = useMemo(() => {
-    const monthlyExpenses = transactions.filter(t => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
-    if (monthlyExpenses <= 0) return 0;
-    const liquid = assets.filter(a => a.category === "savings" || a.category === "cash" || a.category === "investment").reduce((s, a) => s + a.value, 0);
-    return Math.round((liquid / monthlyExpenses) * 10) / 10;
-  }, [transactions, assets]);
+  // Same engine as Home → identical numbers everywhere, no defaults.
+  const store = useStore();
+  const snap = useMemo(() => computeSnapshot(store as any, getCurrentMonthKey()), [
+    store.transactions, store.assets, store.liabilities, store.investments, store.gold, store.properties,
+    store.structuredLoans, store.loans, store.budgets, store.buckets, store.goals, store.sips, store.insurance,
+  ]);
 
   const planBadgeText = isLifetime ? "Lifetime VIP" : isPaid ? "Pro Active" : inTrial ? "Pro Trial" : "Free Plan";
 
   return (
     <>
-      <Header title="Profile" />
+      <Header title={t("profile.title")} />
       <Screen>
         <div className="px-5 pt-2 space-y-4">
           <div className="bg-card rounded-2xl p-5 border border-border/60 flex items-center justify-between gap-4">
@@ -123,6 +113,11 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
                   {isLifetime ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/15 text-amber-600 border border-amber-500/30">
                       <Crown className="size-3" /> VIP
+                    </span>
+                  ) : isPromoUser ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold border"
+                      style={{ background: "rgba(255,215,0,0.15)", color: "#B7791F", borderColor: "rgba(255,215,0,0.4)" }}>
+                      🎁 PRO {promoDaysLeft}d
                     </span>
                   ) : isPaid ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-primary/15 text-primary border border-primary/30">
@@ -138,7 +133,12 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
                     </span>
                   )}
                 </div>
-                <div className="text-xs text-muted-foreground truncate">{userEmail}</div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <div className="text-xs text-muted-foreground truncate">{userEmail}</div>
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                    v{APP_VERSION}
+                  </span>
+                </div>
               </div>
             </div>
             <button
@@ -149,10 +149,36 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
             </button>
           </div>
 
+          {/* ── Promo countdown banner ── */}
+          {isPromoUser && promoDaysLeft > 0 && (
+            <div
+              className="rounded-2xl p-4 flex items-center gap-3"
+              style={{
+                background: "linear-gradient(135deg, rgba(255,215,0,0.12), rgba(255,140,0,0.08))",
+                border: "1px solid rgba(255,215,0,0.3)",
+              }}
+            >
+              <div
+                className="size-10 rounded-xl shrink-0 flex items-center justify-center text-xl"
+                style={{ background: "rgba(255,215,0,0.2)" }}
+              >
+                🎉
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold" style={{ color: "#B7791F" }}>
+                  Launch Celebration — Pro is free!
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  {promoDaysLeft} days remaining of your 84-day free Pro access
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-3 gap-3">
-            <StatCard label="Net worth" value={nw.netWorth > 0 ? inr(nw.netWorth) : "—"} />
-            <StatCard label="Score" value={`${healthScore}`} />
-            <StatCard label="Runway" value={emergencyMonths > 0 ? `${emergencyMonths}m` : "—"} />
+            <StatCard label={t("profile.netWorth")} value={snap.netWorth.hasData ? `${snap.netWorth.value < 0 ? "−" : ""}${inr(snap.netWorth.value)}` : "—"} />
+            <StatCard label={t("profile.score")} value={snap.healthScore !== null ? `${snap.healthScore}` : "—"} />
+            <StatCard label={t("profile.runway")} value={snap.runwayMonths !== null ? `${snap.runwayMonths.toFixed(1)}m` : "—"} />
           </div>
 
           {/* ITR Filing Autopilot Action */}
@@ -165,39 +191,39 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
                 <FileText className="size-5 text-white" />
               </div>
               <div className="text-left">
-                <div className="font-bold font-display tracking-wide text-[15px]">File ITR (AI-Assisted)</div>
-                <div className="text-xs text-blue-100 font-medium mt-0.5">AI-assisted • Review before filing</div>
+                <div className="font-bold font-display tracking-wide text-[15px]">{t("profile.fileItr")}</div>
+                <div className="text-xs text-blue-100 font-medium mt-0.5">{t("profile.itrSubtitle")}</div>
               </div>
             </div>
             <ChevronRight className="size-5 text-white/80" />
           </button>
 
-          <Section title="Wealth intelligence">
+          <Section title={t("profile.wealthIntelligence")}>
             {wealth.map((m) => (
               <Row key={m.id} icon={<m.icon className="size-4" />} tint={m.tint} label={m.label} onClick={() => go(m.id)} />
             ))}
           </Section>
 
-          <Section title="More tools">
+          <Section title={t("profile.moreTools")}>
             {more.map((m) => (
               <Row key={m.id} icon={<m.icon className="size-4" />} tint={m.tint} label={m.label} onClick={() => go(m.id)} />
             ))}
           </Section>
 
-          <Section title="Settings">
+          <Section title={t("profile.settings")}>
             {settings.map((s) => (
               <Row
                 key={s.label}
                 icon={<s.icon className="size-4" />}
                 tint="#64748B"
-                label={s.label}
-                badge={s.id === "pricing" ? planBadgeText : undefined}
+                label={s.id === "language-settings" ? t("profile.language") : s.label}
+                badge={s.id === "pricing" ? planBadgeText : s.id === "language-settings" ? langMeta.native : undefined}
                 onClick={s.id ? () => go(s.id!) : undefined}
               />
             ))}
           </Section>
 
-          <Section title="Legal">
+          <Section title={t("profile.legal")}>
             {legal.map((l) => (
               <Row key={l.id} icon={<l.icon className="size-4" />} tint="#64748B" label={l.label} onClick={() => go(l.id)} />
             ))}
@@ -205,23 +231,23 @@ export function Profile({ go }: { go: (id: ScreenId) => void }) {
 
           {signOutConfirm ? (
             <div className="bg-card rounded-2xl border border-rose-200 p-4 flex flex-col gap-3">
-              <p className="text-sm font-semibold text-center">Sign out of LiveSync?</p>
-              <p className="text-xs text-muted-foreground text-center">Your data stays safely in the cloud.</p>
+              <p className="text-sm font-semibold text-center">{t("profile.signOutConfirm")}</p>
+              <p className="text-xs text-muted-foreground text-center">{t("profile.dataSafe")}</p>
               <div className="flex gap-2">
-                <button onClick={() => setSignOutConfirm(false)} className="flex-1 bg-muted rounded-xl py-2.5 text-sm font-semibold">Cancel</button>
+                <button onClick={() => setSignOutConfirm(false)} className="flex-1 bg-muted rounded-xl py-2.5 text-sm font-semibold">{t("profile.cancel")}</button>
                 <button onClick={() => api.signout()} className="flex-[2] bg-rose-600 text-white rounded-xl py-2.5 text-sm font-bold flex items-center justify-center gap-1.5">
-                  <LogOut className="size-3.5" /> Sign out
+                  <LogOut className="size-3.5" /> {t("profile.signOut")}
                 </button>
               </div>
             </div>
           ) : (
             <button onClick={() => setSignOutConfirm(true)} className="w-full bg-card rounded-2xl p-4 border border-border/60 flex items-center gap-3 text-rose-600 active:scale-[0.98] transition-transform">
               <LogOut className="size-4" />
-              <span className="text-sm" style={{ fontWeight: 600 }}>Sign out</span>
+              <span className="text-sm" style={{ fontWeight: 600 }}>{t("profile.signOut")}</span>
             </button>
           )}
 
-          <div className="text-center text-xs text-muted-foreground py-2">LiveSync AI · v{APP_VERSION}</div>
+          <div className="text-center text-xs text-muted-foreground py-2">LiveSync AI · v{APP_VERSION} (Build 7)</div>
         </div>
       </Screen>
     </>

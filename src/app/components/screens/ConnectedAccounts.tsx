@@ -23,6 +23,7 @@ import {
   TrendingUp,
   TrendingDown,
   Wallet,
+  ArrowDownLeft,
   ArrowUpRight,
   ArrowDownRight,
 } from "lucide-react";
@@ -185,7 +186,7 @@ export function ConnectedAccounts({ onBack, go }: { onBack: () => void; go?: (id
               </div>
             </div>
             <p className="text-xs text-slate-300/90 leading-relaxed">
-              LiveSync tracks the accounts and transactions you add. We do not ask for bank passwords or OTPs. Account data is synchronised to your cloud account; see Privacy & Data for details about storage and AI processing.
+              LiveSync tracks the accounts and transactions you add. We do not ask for bank passwords or OTPs. All data stays on this phone; see Privacy & Data for details about storage and AI processing.
             </p>
           </div>
 
@@ -334,13 +335,13 @@ export function ConnectedAccounts({ onBack, go }: { onBack: () => void; go?: (id
                         <div className="grid grid-cols-3 gap-2 text-xs">
                           <div className="bg-emerald-50/60 border border-emerald-100/80 rounded-lg p-2">
                             <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-semibold">
-                              <ArrowUpRight className="size-3" /> Income
+                              <ArrowDownLeft className="size-3" /> Income
                             </div>
                             <div className="font-bold text-emerald-800 mt-0.5">{inr(stats.income)}</div>
                           </div>
                           <div className="bg-rose-50/60 border border-rose-100/80 rounded-lg p-2">
                             <div className="flex items-center gap-1 text-[10px] text-rose-700 font-semibold">
-                              <ArrowDownRight className="size-3" /> Spent
+                              <ArrowUpRight className="size-3" /> Spent
                             </div>
                             <div className="font-bold text-rose-800 mt-0.5">{inr(stats.expense)}</div>
                           </div>

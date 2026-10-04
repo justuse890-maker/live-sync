@@ -41,7 +41,7 @@ tx.push({ id: "ins-2", title: "Insurance", merchant: "LIC", category: "Insurance
 for (let w = 8; w >= 2; w--) {
   tx.push({ id: `food-${w}`, title: "Zomato", merchant: "Zomato", category: "Food", amount: 1200, type: "expense", date: daysAgo(w * 7) });
 }
-tx.push({ id: "food-spike", title: "Zomato", merchant: "Zomato", category: "Food", amount: 5000, type: "expense", date: daysAgo(3) });
+tx.push({ id: "food-spike", title: "Zomato", merchant: "Zomato", category: "Food", amount: 7000, type: "expense", date: daysAgo(3) });
 
 // ── [P0.1] Cash flow forecast ────────────────────────────────────────────
 const forecast = forecastCashFlow(tx, 25000, 30, 5000);

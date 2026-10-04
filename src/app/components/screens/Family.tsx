@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Users, UserPlus, Crown, Shield, Eye, Copy, Check, X, Loader2,
-  Target, Wallet, PiggyBank, TrendingUp, MoreVertical, Trash2,
+  Target, Wallet, PiggyBank, TrendingUp, MoreVertical, Trash2, Share2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Header, Screen } from "../Shell";
@@ -284,6 +284,12 @@ function InviteSheet({ onClose, onInvited }: { onClose: () => void; onInvited: (
         name, email, role, initials,
         joinedAt: new Date().toISOString(),
       });
+      
+      // Trigger native email client to send the official invite mail
+      const subject = encodeURIComponent("You're invited to join our Household on LiveSync");
+      const body = encodeURIComponent(`Hi ${name},\n\nI'm inviting you to join our household on LiveSync to manage our family finances together as a ${roleMeta[role].label.toLowerCase()}.\n\nClick the link below to accept the invitation:\n${inviteLink}\n\nBest,\nLiveSync`);
+      window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
+
       onInvited(member);
     } catch (e) {
       console.warn("invite failed", e);
@@ -370,6 +376,24 @@ function InviteSheet({ onClose, onInvited }: { onClose: () => void; onInvited: (
                 {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
               </button>
             </div>
+
+            {/* Check if native sharing is available in the browser */}
+            {typeof navigator !== "undefined" && navigator.share && (
+              <button
+                onClick={() => {
+                  navigator.share({
+                    title: "Join my LiveSync Household",
+                    text: "I'm inviting you to manage our family finances together on LiveSync. Tap the link to accept my invite:",
+                    url: inviteLink,
+                  }).catch(() => {});
+                }}
+                className="w-full mb-4 bg-primary text-primary-foreground rounded-xl py-3 text-sm flex items-center justify-center gap-2"
+                style={{ fontWeight: 700 }}
+              >
+                <Share2 className="size-4" /> Share via WhatsApp & Others
+              </button>
+            )}
+
             <button onClick={() => setStep("form")} className="w-full text-xs text-muted-foreground py-2" style={{ fontWeight: 600 }}>
               ← Back to invite by email
             </button>

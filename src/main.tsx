@@ -17,8 +17,12 @@ ensureNewsChannel();
 //   - visualViewport.height shrinks when the soft keyboard is shown (we want that)
 //   - 100dvh can over-count on Android 15+ edge-to-edge before insets settle
 function setAppHeight() {
-  // Prefer visualViewport (shrinks with keyboard) over innerHeight
-  const h = (window.visualViewport?.height ?? window.innerHeight);
+  // Android's innerHeight already excludes native system bars when the status
+  // bar does not overlay the WebView. Only use visualViewport while the soft
+  // keyboard is actually open; at rest it can create a false blank top area.
+  const viewport = window.visualViewport;
+  const keyboardOpen = !!viewport && window.innerHeight - viewport.height > 120;
+  const h = keyboardOpen ? viewport!.height : window.innerHeight;
   document.documentElement.style.setProperty("--app-height", `${h}px`);
 }
 

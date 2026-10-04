@@ -59,6 +59,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Exact alarms so bill / note reminders fire on time (Android 12+) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Camera for document scanning (DocumentVault feature) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- For file imports -->

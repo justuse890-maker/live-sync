@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router";
 import {
   Shield, Plane, Bike, Home, PiggyBank, Car, GraduationCap, Laptop, X,
@@ -8,6 +8,8 @@ import {
 import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { useStore, Bucket } from "../../store";
+import { api } from "../../lib/api";
+import { cleanBucketFields, sanitizeBucket } from "../../lib/fieldCrypto";
 import { format, parseISO } from "date-fns";
 import { getGoalDeadlineMetrics, getQuickDatePreset, isValidGoalDate } from "../../lib/dateUtils";
 
@@ -52,23 +54,50 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
   }
 
   const history = bucketContributions.filter((c) => c.bucketId === id).sort((a, b) => (a.date < b.date ? 1 : -1));
-  const p = bucket.targetAmount > 0 ? (bucket.savedAmount / bucket.targetAmount) * 100 : 0;
-  const remaining = Math.max(0, bucket.targetAmount - bucket.savedAmount);
+
+  // Safely clean and normalize bucket fields for immediate display
+  const clean = cleanBucketFields(bucket);
+  const targetAmount = clean.targetAmount;
+  const savedAmount = clean.savedAmount;
+  const displayName = clean.name;
+  const displayDesc = clean.description;
+  const isCompleted = targetAmount > 0 && savedAmount >= targetAmount;
+  const p = targetAmount > 0 ? (savedAmount / targetAmount) * 100 : 0;
+  const remaining = Math.max(0, targetAmount - savedAmount);
   
-  const [iconName, colorHex] = (bucket.iconOrColor || "PiggyBank:#1E40AF").split(":");
+  const [iconName, colorHex] = (clean.iconOrColor || "PiggyBank:#1E40AF").split(":");
   const Icon = iconMap[iconName] || PiggyBank;
   const color = colorHex || "#1E40AF";
 
   // Deadline intelligence metrics
-  const deadlineMetrics = getGoalDeadlineMetrics(bucket.targetDate, bucket.targetAmount, bucket.savedAmount);
+  const deadlineMetrics = getGoalDeadlineMetrics(clean.targetDate, targetAmount, savedAmount);
+
+  // Auto-heal bucket if it contains raw encrypted values or corrupted status
+  useEffect(() => {
+    if (!bucket) return;
+    const hasEnc = (
+      (typeof bucket.name === "string" && bucket.name.startsWith("enc:")) ||
+      (typeof bucket.description === "string" && bucket.description.startsWith("enc:")) ||
+      typeof bucket.targetAmount === "string" ||
+      isNaN(Number(bucket.targetAmount)) ||
+      (bucket.status === "completed" && Number(bucket.targetAmount) > Number(bucket.savedAmount))
+    );
+    if (hasEnc) {
+      api.getCurrentUserId().then((uid) => {
+        sanitizeBucket(bucket, uid).then((healed) => {
+          updateBucket(healed);
+        });
+      });
+    }
+  }, [bucket?.id, bucket?.name, bucket?.targetAmount, bucket?.savedAmount, bucket?.status]);
 
   const openEditModal = () => {
-    setEditName(bucket.name);
-    setEditTarget(String(bucket.targetAmount));
+    setEditName(displayName);
+    setEditTarget(targetAmount > 0 ? String(targetAmount) : "");
     // If target date is invalid year (e.g. 3333), leave empty or default to realistic
-    setEditDeadline(isValidGoalDate(bucket.targetDate) ? (bucket.targetDate || "") : "");
-    setEditMonthlyTarget(bucket.monthlySaveTarget ? String(bucket.monthlySaveTarget) : "");
-    setEditNotes(bucket.description || "");
+    setEditDeadline(isValidGoalDate(clean.targetDate) ? (clean.targetDate || "") : "");
+    setEditMonthlyTarget(clean.monthlySaveTarget ? String(clean.monthlySaveTarget) : "");
+    setEditNotes(displayDesc || "");
     setEditIcon(iconName);
     setEditColor(color);
     setEditOpen(true);
@@ -142,7 +171,7 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
   return (
     <>
       <Header 
-        title={bucket.name} 
+        title={displayName} 
         showBack={!!onBack} 
         onBack={onBack} 
         rightNode={
@@ -196,7 +225,7 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
           {/* Main Progress Ring Card */}
           <div className="bg-card rounded-3xl p-6 border border-border/60 shadow-sm flex flex-col items-center relative overflow-hidden">
             <div className="absolute top-0 right-0 p-4">
-              {bucket.status === "completed" && (
+              {isCompleted && (
                 <div className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[10px] uppercase font-bold rounded-full flex items-center gap-1 shadow-sm">
                   <Sparkles className="size-3" /> Completed
                 </div>
@@ -231,7 +260,7 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
             <div className="mt-6 w-full grid grid-cols-2 gap-3 text-center">
               <div className="bg-slate-50/80 rounded-2xl p-3.5 border border-border/50">
                 <div className="text-[10px] uppercase text-muted-foreground font-bold tracking-wider mb-0.5">Saved</div>
-                <div className="font-bold text-slate-800 text-base">{inr(bucket.savedAmount)}</div>
+                <div className="font-bold text-slate-800 text-base">{inr(savedAmount)}</div>
               </div>
               <div className="bg-slate-50/80 rounded-2xl p-3.5 border border-border/50">
                 <div className="text-[10px] uppercase text-muted-foreground font-bold tracking-wider mb-0.5">Remaining</div>
@@ -278,12 +307,12 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
           )}
 
           {/* Notes */}
-          {bucket.description && (
+          {displayDesc ? (
             <div className="bg-card rounded-2xl p-5 border border-border/60 shadow-sm">
               <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider mb-2">Notes</div>
-              <p className="text-sm text-slate-700 whitespace-pre-wrap">{bucket.description}</p>
+              <p className="text-sm text-slate-700 whitespace-pre-wrap">{displayDesc}</p>
             </div>
-          )}
+          ) : null}
 
           {/* Goal Details Breakdown */}
           <div className="bg-card rounded-2xl p-5 border border-border/60 shadow-sm space-y-3.5">
@@ -296,7 +325,7 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
 
             <div className="flex justify-between items-center text-sm">
               <span className="text-muted-foreground text-xs font-medium">Target Amount</span>
-              <span className="font-bold text-slate-800">{inr(bucket.targetAmount)}</span>
+              <span className="font-bold text-slate-800">{inr(targetAmount)}</span>
             </div>
 
             <div className="flex justify-between items-center text-sm">
@@ -313,17 +342,17 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
               </div>
             </div>
 
-            {bucket.monthlySaveTarget && (
+            {clean.monthlySaveTarget ? (
               <div className="flex justify-between items-center text-sm">
                 <span className="text-muted-foreground text-xs font-medium">Monthly Save Target</span>
-                <span className="font-bold text-slate-800">{inr(bucket.monthlySaveTarget)}/mo</span>
+                <span className="font-bold text-slate-800">{inr(clean.monthlySaveTarget)}/mo</span>
               </div>
-            )}
+            ) : null}
 
             <div className="flex justify-between items-center text-sm">
               <span className="text-muted-foreground text-xs font-medium">Status</span>
               <span className="font-semibold capitalize text-slate-800 px-2 py-0.5 bg-slate-100 rounded-md text-xs">
-                {bucket.status}
+                {isCompleted ? "Completed" : clean.status === "archived" ? "Archived" : "Active"}
               </span>
             </div>
           </div>
