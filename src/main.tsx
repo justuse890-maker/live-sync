@@ -3,6 +3,10 @@ import App from "./app/App.tsx";
 import "./styles/index.css";
 import { initStatusBar } from "./app/lib/native.ts";
 import { ensureNewsChannel } from "./app/lib/newsService.ts";
+import { runStartupDataPreservation } from "./app/lib/recovery.ts";
+
+// ─── Data preservation: Universal scan and recovery before first render ──────
+runStartupDataPreservation().catch((e) => console.warn("[main] startup preservation failed:", e));
 
 // ─── Native: fix status bar overlay before first render ──────────────────────
 initStatusBar();

@@ -65,8 +65,7 @@ export function PrivacyPolicy({ onBack }: { onBack: () => void }) {
             <P className="mt-3">
               <B>Third-party AI providers currently used:</B>
             </P>
-            <P>• Groq (Llama) — when you configure and use the bring-your-own-key AI Coach; requests go directly from the app to Groq.</P>
-            <P>• Google (Gemini) — merchant normalisation, when that feature is enabled and available.</P>
+            <P>• Whichever provider <B>you</B> choose (for example Google Gemini, OpenAI, Anthropic, Groq or another compatible service) — only after you add your own API key and accept the AI terms. Requests go directly from the app to that provider with your key; LiveSync runs no AI service and never receives your key or your questions.</P>
             <P className="mt-3">
               We implement reasonable administrative, technical, and organizational safeguards to protect user information. However, <B>no digital platform or AI service can guarantee absolute security or error-free operation</B>. By choosing to use AI-powered features, you acknowledge these inherent limitations and consent to the processing of your information as described herein.
             </P>

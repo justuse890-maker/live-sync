@@ -1,10 +1,9 @@
 import { useMemo, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
-  Sparkles, ChevronRight, ChevronLeft, Calendar, TrendingUp, TrendingDown, Target, Wallet,
+  ArrowUpRight, Sparkles, ChevronRight, ChevronLeft, Calendar, TrendingUp, TrendingDown, Target, Wallet,
   BarChart3, Activity, Plus, StickyNote, AlertTriangle, CheckCircle2, Info, Receipt, Lock, ShieldCheck,
 } from "lucide-react";
-import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, Cell } from "recharts";
 import { useStore } from "../../store";
 import { inr, ScreenId } from "../types";
 import { Screen } from "../Shell";
@@ -15,6 +14,14 @@ import { formatMonthName, shiftMonth, getCurrentMonthKey } from "../../lib/dateU
 import { computeSnapshot, buildInsights, healthLabel } from "../../lib/snapshot";
 import { buildObligations, dueLabel, Obligation } from "../../lib/obligations";
 import { tap } from "../../lib/feedback";
+import { buildHero } from "../../lib/homeHero";
+import { SafeToSpendSheet } from "../SafeToSpendSheet";
+import { emiBurden, typicalMonthlyIncome } from "../../lib/emiPlanner";
+import { currentInstallment } from "../../lib/loanEngine";
+import { readEmiAlertPct } from "../EmiCommand";
+import { CaLensCard } from "../CaLensCard";
+import { Sparrow } from "../Sparrow";
+import { monthlyGreeting } from "../../lib/sparrow";
 
 /**
  * Home. Every figure on this screen is computed by lib/snapshot.ts or
@@ -58,6 +65,42 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
   const nextItems = upcoming.filter((o) => !todayItems.includes(o));
   const upcomingTotal = nextItems.reduce((a, o) => a + (o.amount || 0), 0);
 
+  // Income-first headline: what came in, what's gone, what's still to pay this month, what's actually free.
+  const monthEnd = useMemo(() => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    return new Date(y, m, 0, 23, 59, 59, 999);
+  }, [selectedMonth]);
+  const hero = useMemo(() => buildHero({
+    income: snap.current.income,
+    expense: snap.current.expense,
+    dueAmounts: upcoming.filter((o) => o.amount && (o.overdue || o.dueAt <= monthEnd)).map((o) => o.amount as number),
+    isCurrentMonth,
+  }), [snap.current.income, snap.current.expense, upcoming, monthEnd, isCurrentMonth]);
+  const [mathOpen, setMathOpen] = useState(false);
+  const dueItems = useMemo(
+    () => upcoming.filter((o) => o.overdue || o.dueAt <= monthEnd).map((o) => ({ title: o.title, amount: o.amount, overdue: o.overdue })),
+    [upcoming, monthEnd],
+  );
+  const pendingTransfer = useMemo(() => {
+    const ids = new Map(store.allTransactions.map((t) => [t.id, t]));
+    return store.transferSuggestions
+      .map((sg) => ({ amount: sg.amount, month: String(ids.get(sg.outId)?.date ?? "").slice(0, 7) }))
+      .find((sg) => sg.month === selectedMonth) ?? null;
+  }, [store.transferSuggestions, store.allTransactions, selectedMonth]);
+  // Chiku's one-line recap of last month, shown in the first week and dismissible for that month.
+  const greeting = useMemo(() => monthlyGreeting(transactions as any), [transactions]);
+  const [greetingHidden, setGreetingHidden] = useState(() => { try { return localStorage.getItem("ls_chiku_greeted") || ""; } catch { return ""; } });
+  const dismissGreeting = () => { if (!greeting) return; setGreetingHidden(greeting.key); try { localStorage.setItem("ls_chiku_greeted", greeting.key); } catch { /* shows again next launch */ } };
+  // The "Money in" card is the doorway to the full report once there is something to report.
+  const heroTappable = snap.current.txCount > 0;
+  const openHero = () => { tap(); go("reports"); };
+  const activeLoans = store.structuredLoans.filter((l) => !l.closed);
+  const emiTotal = activeLoans.reduce((s, l) => s + currentInstallment(l).amount, 0);
+  const emi = useMemo(
+    () => emiBurden(typicalMonthlyIncome(transactions), emiTotal, readEmiAlertPct()),
+    [transactions, emiTotal],
+  );
+
   const health = healthLabel(snap.healthScore);
   const scoreDelta = snap.healthScore !== null && prevSnap.healthScore !== null ? snap.healthScore - prevSnap.healthScore : null;
 
@@ -98,7 +141,7 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
               <h1 className="text-lg font-bold text-slate-900 tracking-tight leading-tight truncate">
                 {firstName ? `Hi ${firstName}` : "Hi there"} <span className="inline-block">👋</span>
               </h1>
-              <p className="text-xs text-slate-500 font-medium flex items-center gap-1"><Lock className="size-3" /> Your data stays on this phone</p>
+              <p className="text-xs text-slate-500 font-medium flex items-center gap-1"><Lock className="size-3" /> On this phone · never sold · no SMS reading</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -132,6 +175,72 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
                   </div>
                 </div>
               )}
+
+              {greeting && greetingHidden !== greeting.key && (
+                <div className="flex items-end gap-2 ls-rise">
+                  <button onClick={() => { tap(); go("coach"); }} className="flex items-end gap-2 flex-1 min-w-0 text-left active:scale-[0.99]">
+                    <Sparrow mood={greeting.mood} size={56} />
+                    <span className="flex-1 bg-card border border-border/60 rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-xs leading-snug text-slate-800">{greeting.text}</span>
+                  </button>
+                  <button onClick={dismissGreeting} aria-label="Dismiss" className="text-[11px] text-slate-400 font-semibold px-1 pb-2">Hide</button>
+                </div>
+              )}
+
+              {/* ── 0. Money in — income is the hero ── */}
+              {!emptyApp && (
+                <div className="ls-rise">
+                <div
+                  className={heroTappable ? "ls-orbit cursor-pointer active:scale-[0.99] transition-transform" : ""}
+                  {...(heroTappable ? { role: "button", tabIndex: 0, "aria-label": `Money in ${monthOnly} — open the full report`, onClick: openHero, onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openHero(); } } } : {})}
+                >
+                <div className={`p-4 shadow-xs ${heroTappable ? "ls-orbit-inner" : "bg-white rounded-2xl border border-slate-200/80"}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Money in · {monthOnly}</div>
+                    <div className="flex items-center gap-2">
+                      {hero.overcommitted && hero.moneyIn > 0 && <span className="text-[11px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full">Over by {inr(-hero.free)}</span>}
+                      {heroTappable && <span className="size-7 rounded-full bg-[#1E3A8A]/10 text-[#1E3A8A] flex items-center justify-center shrink-0" aria-hidden="true"><ArrowUpRight className="size-4" /></span>}
+                    </div>
+                  </div>
+                  {hero.moneyIn > 0 ? (
+                    <>
+                      <div className="font-display text-[34px] leading-none font-black text-slate-900 mt-1.5">{inr(hero.moneyIn)}</div>
+                      <div className="mt-3 h-3 w-full rounded-full bg-slate-100 overflow-hidden flex" role="img" aria-label={`Spent ${Math.round(hero.spentPct)} percent, still to pay ${Math.round(hero.duePct)} percent, free ${Math.round(hero.freePct)} percent`}>
+                        <div className="h-full bg-rose-400" style={{ width: `${hero.spentPct}%` }} />
+                        <div className="h-full bg-amber-400" style={{ width: `${hero.duePct}%` }} />
+                        <div className="h-full bg-emerald-500" style={{ width: `${hero.freePct}%` }} />
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                        <div><div className="flex items-center gap-1 text-slate-500"><span className="size-2 rounded-full bg-rose-400" />Spent</div><div className="text-sm font-bold text-slate-900">{inr(hero.spent)}</div></div>
+                        <div><div className="flex items-center gap-1 text-slate-500"><span className="size-2 rounded-full bg-amber-400" />{isCurrentMonth ? "Still to pay" : "Bills"}</div><div className="text-sm font-bold text-slate-900">{isCurrentMonth ? inr(hero.stillToPay) : "—"}</div></div>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); tap(); setMathOpen(true); }} aria-label={`${hero.free < 0 ? "Short by" : "Safe to spend"} ${inr(Math.abs(hero.free))}. Show how this is worked out`} className="text-left active:scale-95 transition-transform"><div className="flex items-center gap-1 text-slate-500"><span className="size-2 rounded-full bg-emerald-500" />{hero.free < 0 ? "Short by" : "Safe to spend"}<Info className="size-3 text-slate-400" aria-hidden="true" /></div><div className={`text-sm font-bold ${hero.free < 0 ? "text-rose-700" : "text-emerald-700"}`}>{inr(Math.abs(hero.free))}</div></button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-2">
+                      <div className="text-sm text-slate-700 leading-snug">No income recorded for {monthFull} yet. Add your salary or other income and this card shows what is actually free to spend.</div>
+                      <button onClick={(e) => { e.stopPropagation(); tap(); onAdd?.(); }} className="mt-3 bg-[#1E3A8A] text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95">+ Add income</button>
+                    </div>
+                  )}
+                  {pendingTransfer && (
+                    <button onClick={(e) => { e.stopPropagation(); tap(); go("transactions"); }} className="mt-3 w-full flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold bg-sky-50 text-sky-800 active:scale-[0.99]">
+                      <span>{inr(pendingTransfer.amount)} looks like your own transfer — confirm so totals are exact</span>
+                      <ChevronRight className="size-3.5 shrink-0" />
+                    </button>
+                  )}
+                  {emi.level !== "none" && emi.level !== "no_income" && (
+                    <button onClick={(e) => { e.stopPropagation(); tap(); go("loans"); }} className={`mt-3 w-full flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold active:scale-[0.99] ${emi.level === "high" ? "bg-rose-50 text-rose-800" : emi.level === "watch" ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"}`}>
+                      <span>EMIs take {Math.round(emi.ratioPct ?? 0)}% of your income</span>
+                      <span className="flex items-center gap-1">{emi.level === "high" ? "Over your limit" : emi.level === "watch" ? "Getting heavy" : "Comfortable"} <ChevronRight className="size-3.5" /></span>
+                    </button>
+                  )}
+                </div>
+                </div>
+                </div>
+              )}
+
+              <SafeToSpendSheet open={mathOpen} onClose={() => setMathOpen(false)} hero={hero} dueItems={dueItems} isCurrentMonth={isCurrentMonth} monthLabel={monthFull} />
+
+              <CaLensCard go={go} />
 
               {/* ── 1. Today ── */}
               <Card className="ls-rise">
@@ -194,52 +303,6 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
                   </div>
                 </Card>
               )}
-
-              {/* ── 3. Money this month ── */}
-              <Card className="ls-rise">
-                <CardHead icon={Wallet} title={`Money in ${monthOnly}`} onMore={snap.current.txCount ? () => go("reports") : undefined} />
-                {snap.current.txCount === 0 ? (
-                  <EmptyState
-                    text={isCurrentMonth ? `No income or expenses recorded for ${monthFull} yet.` : `Nothing was recorded in ${monthFull}.`}
-                    cta={isCurrentMonth ? "Add income or expense" : undefined}
-                    onCta={() => onAdd?.()}
-                  />
-                ) : (
-                  <>
-                    <div className="grid grid-cols-3 gap-2 mb-3">
-                      <Metric dot="bg-emerald-500" label="Income" value={inr(snap.current.income)} />
-                      <Metric dot="bg-rose-500" label="Expenses" value={inr(snap.current.expense)} />
-                      <div className={`rounded-xl p-2.5 border ${snap.current.net >= 0 ? "bg-emerald-50/80 border-emerald-200/70" : "bg-rose-50/80 border-rose-200/70"}`}>
-                        <div className={`text-[11px] font-semibold mb-0.5 ${snap.current.net >= 0 ? "text-emerald-800" : "text-rose-800"}`}>Net</div>
-                        <div className={`text-sm font-black truncate ${snap.current.net >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
-                          {snap.current.net >= 0 ? "+" : "−"}{inr(snap.current.net)}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-[10px] text-slate-400 mb-1">{`${snap.current.txCount} entries · last 6 months below`}</div>
-                    <div className="h-40 w-full -mx-1">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={snap.series} margin={{ top: 10, right: 10, left: -18, bottom: 0 }} barGap={3}>
-                          <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#64748B", fontWeight: 600 }} />
-                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#94A3B8" }} width={44}
-                            tickFormatter={(v: number) => (v === 0 ? "0" : v >= 100000 ? `₹${(v / 100000).toFixed(1)}L` : v >= 1000 ? `₹${Math.round(v / 1000)}K` : `₹${v}`)} />
-                          <Tooltip content={<BarTip />} cursor={{ fill: "#F1F5F9" }} />
-                          <Bar dataKey="income" name="Income" radius={[3, 3, 0, 0]} barSize={11} animationDuration={700}>
-                            {snap.series.map((m) => <Cell key={`i-${m.key}`} fill="#10B981" fillOpacity={m.key === selectedMonth ? 1 : 0.55} />)}
-                          </Bar>
-                          <Bar dataKey="expense" name="Expenses" radius={[3, 3, 0, 0]} barSize={11} animationDuration={700}>
-                            {snap.series.map((m) => <Cell key={`e-${m.key}`} fill="#F43F5E" fillOpacity={m.key === selectedMonth ? 1 : 0.55} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="flex items-center justify-center gap-6 pt-2 border-t border-slate-100 text-xs font-semibold text-slate-600">
-                      <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-xs bg-emerald-500" />Income</span>
-                      <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-xs bg-rose-500" />Expenses</span>
-                    </div>
-                  </>
-                )}
-              </Card>
 
               {/* ── 4. Financial snapshot ── */}
               <Card className="ls-rise">
@@ -448,14 +511,6 @@ function EmptyState({ text, cta, onCta }: { text: string; cta?: string; onCta?: 
   );
 }
 
-function Metric({ dot, label, value }: { dot: string; label: string; value: string }) {
-  return (
-    <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
-      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 mb-0.5"><span className={`size-2 rounded-full ${dot}`} />{label}</div>
-      <div className="text-sm font-black text-slate-900 truncate">{value}</div>
-    </div>
-  );
-}
 
 function ScoreRing({ score }: { score: number }) {
   const [shown, setShown] = useState(0);
@@ -476,17 +531,3 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
-function BarTip({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-[#0F172A] text-white rounded-xl px-3 py-2 text-xs shadow-xl space-y-1">
-      <div className="font-bold text-slate-300 border-b border-slate-800 pb-1">{label}</div>
-      {payload.map((p: any, i: number) => (
-        <div key={i} className="flex items-center justify-between gap-3">
-          <span className="text-slate-400">{p.name}:</span>
-          <span className="font-bold">{inr(p.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}

@@ -7,7 +7,7 @@ import { todayISO } from "../lib/dateUtils";
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Camera, Loader2, Sparkles, X, Check, Image as ImageIcon, Trash2, Pencil } from "lucide-react";
 import { useStore } from "../store";
-import { parseUtterance, parseReceipt, type CapturedTx } from "../lib/capture";
+import { parseUtterance, parseScan, SCAN_DOC_LABEL, type CapturedTx } from "../lib/capture";
 import { preprocess, recognize, type OcrLang } from "../lib/ocr";
 import { useVoiceLang } from "../lib/voiceLangs";
 import { VoiceLangPicker } from "./VoiceLangPicker";
@@ -45,7 +45,7 @@ export function CaptureVoiceScan({ mode, onClose }: { mode: Mode; onClose: () =>
     <div>
       {mode === "voice"
         ? <VoicePanel onTranscript={(t) => { setTranscript(t); setDrafts(parseUtterance(t)); }} transcript={transcript} />
-        : <ScanPanel onText={(t, conf) => { setTranscript(""); const r = parseReceipt(t, [], conf); setDrafts(r ? [r] : []); }} />}
+        : <ScanPanel onText={(t, conf) => { setTranscript(""); const r = parseScan(t, [], conf); setDrafts(r ? [r] : []); }} />}
 
       {drafts.length > 0 && (
         <>
@@ -343,6 +343,11 @@ function DraftRow({
           {!editing ? (
             <>
               <div className="text-sm truncate" style={{ fontWeight: 700 }}>{draft.merchant || draft.category || "Untitled Store"}</div>
+              {draft.docType && (
+                <span className="inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  Detected: {SCAN_DOC_LABEL[draft.docType]}
+                </span>
+              )}
               <div className="text-[11px] text-muted-foreground truncate">
                 {draft.category ?? "Other"}{draft.date ? ` · ${draft.date}` : ""}
                 {draft.paymentMode ? ` · ${draft.paymentMode}` : ""}

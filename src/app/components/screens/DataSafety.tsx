@@ -144,7 +144,7 @@ export function DataSafety({ onBack, onDeleteSuccess }: { onBack: () => void; on
               color="text-rose-500"
               bg="bg-rose-500/10"
               title="AI providers used"
-              desc="Merchant categorisation can use Google Gemini through our server. Bring-your-own-key Coach sends your request directly to Groq."
+              desc="LiveSync runs no AI service. If you connect your own AI provider and key, requests go directly from your phone to that provider. Without a key, nothing is sent."
               last
             />
             <div className="px-4 py-3 bg-amber-50/60 border-t border-amber-200/60">

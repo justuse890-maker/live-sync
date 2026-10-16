@@ -12,6 +12,7 @@ import { useEntitlements } from "../../lib/useEntitlements";
 import { useTranslation } from "../../lib/i18n";
 
 const wealth: { id: ScreenId; label: string; icon: any; tint: string }[] = [
+  { id: "calens",    label: "CA Lens — statements & health check", icon: Scale, tint: "#0F766E" },
   { id: "networth",  label: "Net Worth Command Center",     icon: Wallet,     tint: "#1E40AF" },
   { id: "timeline",  label: "Financial Timeline",           icon: Calendar,   tint: "#0EA5E9" },
   { id: "leakage",   label: "Wealth Leakage Detector",      icon: Droplets,   tint: "#EF4444" },
@@ -37,6 +38,7 @@ const more: { id: ScreenId; label: string; icon: any; tint: string }[] = [
   { id: "family", label: "Family Finance", icon: Users, tint: "#EC4899" },
   { id: "cash", label: "Cash Wallet", icon: Banknote, tint: "#10B981" },
   { id: "sip", label: "SIP Tracker", icon: PiggyBank, tint: "#10B981" },
+  { id: "chits", label: "Chit Funds", icon: Users, tint: "#F59E0B" },
   { id: "insurance", label: "Insurance Policies", icon: Shield, tint: "#1E40AF" },
   { id: "creditscore", label: "Credit Score Log", icon: Award, tint: "#64748B" },
   { id: "cards", label: "Card Desk", icon: CreditCard, tint: "#4F46E5" },
@@ -48,8 +50,10 @@ const settings: { label: string; icon: any; id?: ScreenId }[] = [
   { label: "Connected Accounts", icon: Wallet, id: "accounts" },
   { label: "Document Vault", icon: FolderLock, id: "documents" },
   { label: "Tax Assistant", icon: Calculator, id: "tax" },
+  { label: "AI Assistant (your own key)", icon: Sparkles, id: "ai-settings" },
   { label: "Security & Privacy", icon: Shield, id: "security" },
   { label: "Subscription Plan", icon: CreditCard, id: "pricing" },
+  { label: "Add from bank messages", icon: MessageSquare, id: "paste" },
   { label: "Import transactions", icon: Upload, id: "import" },
   { label: "Privacy & Data", icon: FileText, id: "privacy" },
   { label: "Data Safety & Account", icon: Shield, id: "data-safety" },

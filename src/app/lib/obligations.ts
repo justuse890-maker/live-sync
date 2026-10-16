@@ -7,6 +7,7 @@
 import type { ScreenId } from "../components/types";
 import type { Note } from "./notes";
 import { isBill } from "./notes";
+import { preEmiAmount } from "./loanEngine";
 
 export type ObligationSource =
   | "note" | "bill" | "emi" | "subscription" | "card" | "insurance" | "household" | "society" | "loan";
@@ -20,13 +21,15 @@ export type Obligation = {
   overdue: boolean;
   screen: ScreenId;
   noteId?: string;
+  /** Card bills only: the minimum due printed on the statement, when the user entered it. */
+  minDue?: number;
 };
 
 type Input = {
   notes: Note[];
-  structuredLoans: Array<{ id: string; lenderName: string; emiAmount: number; nextEmiDueDate: string; closed?: boolean; loanType?: string }>;
+  structuredLoans: Array<{ id: string; lenderName: string; emiAmount: number; nextEmiDueDate: string; closed?: boolean; loanType?: string; phase?: string; disbursedAmount?: number; interestRatePA?: number }>;
   subscriptions: Array<{ id: string; name: string; cost: number; renewal: string; status?: string; period?: string }>;
-  creditCards: Array<{ id: string; bankName: string; cardName: string; last4Digits: string; dueDate?: number; cardType?: string }>;
+  creditCards: Array<{ id: string; bankName: string; cardName: string; last4Digits: string; dueDate?: number; cardType?: string; statementDue?: number; minDue?: number; statementDueFor?: string; statementPaidFor?: string }>;
   insurance: Array<{ id: string; name: string; premiumAmount: number; dueDate: string }>;
   householdReminders: Array<{ id: string; title: string; dueDate: string; done: boolean }>;
   societyNotices: Array<{ id: string; title: string; type: string; date: string; amount?: number; paid?: boolean }>;
@@ -92,7 +95,9 @@ export function buildObligations(input: Input, horizonDays = 35, overdueDays = 1
     if (l.closed) continue;
     const d = validDate(l.nextEmiDueDate);
     if (!d) continue;
-    push({ id: `emi:${l.id}`, source: "emi", title: `${l.lenderName} EMI`, amount: l.emiAmount || undefined, dueAt: nextMonthly(d, now, 3), screen: "loans" });
+    const pre = l.phase === "pre_emi";
+    const amount = pre ? preEmiAmount(l.disbursedAmount ?? 0, l.interestRatePA ?? 0) : l.emiAmount;
+    push({ id: `emi:${l.id}`, source: "emi", title: `${l.lenderName} ${pre ? "Pre-EMI" : "EMI"}`, amount: amount || undefined, dueAt: nextMonthly(d, now, 3), screen: "loans" });
   }
 
   // 3. Subscriptions
@@ -108,7 +113,11 @@ export function buildObligations(input: Input, horizonDays = 35, overdueDays = 1
   for (const c of input.creditCards) {
     if (!c.dueDate || (c.cardType && c.cardType !== "credit" && c.cardType !== "corporate")) continue;
     const base = new Date(now.getFullYear(), now.getMonth(), Math.min(c.dueDate, 28), 9, 0, 0);
-    push({ id: `card:${c.id}`, source: "card", title: `${c.bankName} card ••${c.last4Digits} bill`, dueAt: nextMonthly(base, now, 2), screen: "cards" });
+    const dueAt = nextMonthly(base, now, 2);
+    if (c.statementPaidFor === monthKey(dueAt)) continue;
+    // The statement amount belongs to one specific due month; an older one is ignored rather than quoted for this month.
+    const fresh = c.statementDue && c.statementDue > 0 && c.statementDueFor === monthKey(dueAt);
+    push({ id: `card:${c.id}`, source: "card", title: `${c.bankName} card ••${c.last4Digits} bill`, amount: fresh ? c.statementDue : undefined, dueAt, screen: "cards", minDue: fresh ? c.minDue : undefined });
   }
 
   // 5. Insurance premiums (yearly)
@@ -143,6 +152,13 @@ export function buildObligations(input: Input, horizonDays = 35, overdueDays = 1
   }
 
   return out.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime());
+}
+
+const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+/** "YYYY-MM" of the next time a card with this due day falls due — the key a statement amount is stamped with. */
+export function cardDueMonthKey(dueDay: number, now = new Date()): string {
+  return monthKey(nextMonthly(new Date(now.getFullYear(), now.getMonth(), Math.min(dueDay, 28), 9, 0, 0), now, 2));
 }
 
 export function daysUntil(d: Date, now = new Date()): number {

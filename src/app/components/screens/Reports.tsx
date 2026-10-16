@@ -71,7 +71,7 @@ const COLORS = [
 
 // Helper to categorize expenses into Needs, Wants, Savings
 const NEEDS_CATEGORIES = new Set(["rent", "grocery", "groceries", "medical", "health", "utilities", "bills", "insurance", "emi", "education"]);
-const SAVINGS_CATEGORIES = new Set(["savings", "investment", "sip", "gold", "mutual fund", "stocks", "ppf", "fd", "goal"]);
+const SAVINGS_CATEGORIES = new Set(["savings", "investment", "sip", "chit fund", "gold", "mutual fund", "stocks", "ppf", "fd", "goal"]);
 
 export function Reports({ onBack, go }: { onBack: () => void; go?: (id: ScreenId) => void }) {
   const [range, setRange] = useState<RangeType>("Monthly");

@@ -37,6 +37,8 @@ export type CapturedTx = {
   rawText?: string;
   /** Things the user should double-check (shown in the review card). */
   warnings?: string[];
+  /** What kind of document the scan was recognised as. */
+  docType?: "upi_sent" | "upi_received" | "salary" | "utility_bill" | "receipt";
 };
 
 // Quick merchant/category fingerprints — keeps detection deterministic and
@@ -433,4 +435,133 @@ export function parseReceipt(text: string, knownMerchants: string[] = [], ocrCon
     rawText: text,
     warnings: warnings.length ? warnings : undefined,
   };
+}
+
+// ─── Document-aware scanning ────────────────────────────────────────────────
+// A camera/gallery scan is not always a shop receipt. People also photograph UPI payment screens
+// ("Paid to …"), "money received" screens, utility bills with a due date, and salary slips.
+// parseScan() recognises which one it is and extracts the right fields; everything else falls back to parseReceipt().
+
+export type ScanDocType = "upi_sent" | "upi_received" | "salary" | "utility_bill" | "receipt";
+
+export const SCAN_DOC_LABEL: Record<ScanDocType, string> = {
+  upi_sent: "UPI payment", upi_received: "Money received", salary: "Salary slip", utility_bill: "Bill", receipt: "Receipt",
+};
+
+export function classifyScan(text: string): ScanDocType {
+  const t = text.replace(/\s+/g, " ");
+  if (/\b(received\s+from|money\s+received|payment\s+received|credited\s+to\s+(?:your|you)|you\s+received)\b/i.test(t) && /(?:₹|rs\.?|inr)\s*[\d,]+/i.test(t)) return "upi_received";
+  if (/\b(paid\s+to|sent\s+to|payment\s+(?:successful|completed|done)|transaction\s+successful|paid\s+successfully)\b/i.test(t) && /\b(upi|google\s*pay|gpay|phonepe|paytm|bhim|utr|transaction\s*id|upi\s*ref)/i.test(t)) return "upi_sent";
+  if (/\b(net\s*pay(?:able)?|net\s*salary|take[\s-]*home|gross\s*salary|earnings)\b/i.test(t) && /\b(basic|hra|deductions?|pf|provident|pay\s*slip|salary\s*slip|payslip)\b/i.test(t)) return "salary";
+  if (/\b(due\s*date|pay\s*by|last\s*date|bill\s*date|bill\s*period|billing\s*period|consumer\s*(?:no|number)|account\s*no|units\s*consumed|meter)\b/i.test(t) && /\b(amount\s*(?:due|payable)|bill\s*amount|net\s*payable|total\s*due|pay\s*now|outstanding)\b/i.test(t)) return "utility_bill";
+  return "receipt";
+}
+
+/** First ₹/Rs amount near the top of a payment screen (the big number is printed first). */
+function headlineAmount(lines: string[]): number {
+  for (const l of lines.slice(0, 14)) {
+    if (/(?:₹|rs\.?|inr)/i.test(l)) {
+      const v = lastMoney(l);
+      if (v > 0) return v;
+    }
+  }
+  // OCR often drops the ₹ glyph or reads it as '2', '€' or 'T': accept a lone number on its own line
+  for (const l of lines.slice(0, 14)) {
+    const m = normaliseDigits(l).match(/^[₹Rs.\s€T2]{0,3}\s*(\d{1,3}(?:,\d{2,3})+|\d{1,7})(\.\d{1,2})?$/i);
+    if (m) {
+      const v = Number(m[1].replace(/,/g, "") + (m[2] || ""));
+      if (v > 0 && v <= MAX_TRANSACTION_AMOUNT) return v;
+    }
+  }
+  return 0;
+}
+
+function afterLabel(lines: string[], label: RegExp): string | undefined {
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(label);
+    if (!m) continue;
+    const inline = lines[i].slice((m.index ?? 0) + m[0].length).replace(/^[\s:\-–]+/, "").trim();
+    const name = inline.length >= 2 ? inline : (lines[i + 1] || "").trim();
+    const cleaned = name.replace(/[^A-Za-z0-9&'.\s\u0900-\u097F-]/g, "").replace(/\s+/g, " ").trim();
+    if (cleaned.length >= 2 && !/^\d+$/.test(cleaned)) return titleCase(cleaned.slice(0, 40));
+  }
+  return undefined;
+}
+
+const UPI_REF = /(?:upi\s*(?:ref(?:erence)?(?:\s*(?:no|id|number))?)|utr|transaction\s*id|txn\s*id|ref(?:erence)?\s*(?:no|id))\s*[:.\-#]?\s*([A-Za-z0-9]{8,24})/i;
+
+export function parseScan(text: string, knownMerchants: string[] = [], ocrConfidence?: number): CapturedTx | null {
+  const docType = classifyScan(text);
+  if (docType === "receipt") return withDoc(parseReceipt(text, knownMerchants, ocrConfidence), "receipt");
+
+  const lines = text.split(/\r?\n/).map(cleanOcrLine).filter((l) => l.length > 1);
+  const warnings: string[] = [];
+  const date = receiptDate(text);
+  if (!date) warnings.push("Date not found — today's date will be used.");
+  const ref = text.match(UPI_REF)?.[1];
+  let amount = 0, merchant: string | undefined, category: string | undefined, type: "expense" | "income" = "expense";
+  const notes: string[] = [];
+
+  if (docType === "upi_sent" || docType === "upi_received") {
+    amount = headlineAmount(lines);
+    if (docType === "upi_sent") {
+      merchant = afterLabel(lines, /\b(?:paid\s*to|sent\s*to|to)\b\s*[:\-]?/i);
+      category = extractCategory(text);
+    } else {
+      type = "income";
+      merchant = afterLabel(lines, /\b(?:received\s*from|from)\b\s*[:\-]?/i);
+      category = "Income";
+    }
+    const app = text.match(/\b(google\s*pay|gpay|phonepe|paytm|bhim|amazon\s*pay|cred)\b/i)?.[1];
+    notes.push(`UPI${app ? ` via ${titleCase(app)}` : ""}`);
+    if (ref) notes.push(`Ref ${ref}`);
+    if (/\b(failed|declined|pending|reversed|refund(?:ed)?)\b/i.test(text)) warnings.push("This screen mentions a failed, pending or reversed payment — check before saving.");
+  } else if (docType === "salary") {
+    type = "income";
+    category = "Salary";
+    const netLine = lines.find((l) => /\b(net\s*pay(?:able)?|net\s*salary|take[\s-]*home)\b/i.test(l));
+    amount = lastMoney(netLine) || lastMoney(lines[lines.indexOf(netLine || "") + 1]);
+    merchant = lines.slice(0, 6).map((l) => l.replace(/[^A-Za-z0-9&'.\s-]/g, "").trim()).find((l) => l.length > 3 && !/pay\s*slip|salary|month|employee|date|name/i.test(l));
+    merchant = merchant ? titleCase(merchant.slice(0, 40)) : undefined;
+    const month = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,'-]*(\d{2,4})\b/i);
+    if (month) notes.push(`Pay slip ${titleCase(month[1])} ${month[2]}`);
+    warnings.push("Salary slips show net pay; confirm it matches what hit your bank.");
+  } else {
+    // utility bill
+    const dueLine = lines.find((l) => /\b(amount\s*(?:due|payable)|bill\s*amount|net\s*payable|total\s*due|outstanding)\b/i.test(l));
+    amount = lastMoney(dueLine) || lastMoney(lines[lines.indexOf(dueLine || "") + 1]);
+    category = extractCategory(text) ?? "Bills";
+    merchant = brandOrHeader(lines, text, knownMerchants);
+    const due = text.match(/(?:due\s*date|pay\s*by|last\s*date)[^0-9A-Za-z]{0,6}([0-9A-Za-z ,/.-]{6,16})/i)?.[1];
+    const dueISO = due ? extractDate(due) : undefined;
+    if (dueISO) notes.push(`Due ${dueISO}`);
+    const cn = text.match(/consumer\s*(?:no|number|id)\.?\s*[:\-]?\s*([A-Za-z0-9-]{4,20})/i)?.[1];
+    if (cn) notes.push(`Consumer ${cn}`);
+    warnings.push("This looks like a bill that may not be paid yet — save it once you have paid, or set a reminder.");
+  }
+
+  if (amount <= 0) return withDoc(parseReceipt(text, knownMerchants, ocrConfidence), "receipt");
+  let confidence = 0.6 + (merchant ? 0.1 : 0) + (date ? 0.1 : 0) + (ref ? 0.1 : 0);
+  if (ocrConfidence != null) confidence *= Math.min(1, Math.max(0.5, ocrConfidence / 80));
+  return {
+    amount, merchant, category, date, type,
+    confidence: Number(Math.min(0.95, confidence).toFixed(2)),
+    paymentMode: docType.startsWith("upi") ? "UPI" : undefined,
+    notes: notes.length ? `Scan · ${notes.join(" · ")}` : undefined,
+    rawText: text,
+    warnings: warnings.length ? warnings : undefined,
+    docType,
+  };
+}
+
+function withDoc(r: CapturedTx | null, docType: ScanDocType): CapturedTx | null {
+  return r ? { ...r, docType } : r;
+}
+
+function brandOrHeader(lines: string[], text: string, known: string[]): string | undefined {
+  const brand = known.find((m) => new RegExp(`\\b${m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text))
+    ?? text.match(/\b(bescom|tneb|mahadiscom|msedcl|tata\s*power|adani\s*electricity|bses|airtel|jio|vodafone|vi|bsnl|act\s*fibernet|indane|bharat\s*gas|hp\s*gas|mahanagar\s*gas|indraprastha\s*gas|bwssb|jal\s*board)\b/i)?.[1];
+  if (brand) return titleCase(brand);
+  const head = lines.slice(0, 6).find((l) => /[A-Za-z]{4}/.test(l) && l.length <= 45 && !/bill|invoice|tax|date|amount|consumer|page/i.test(l));
+  return head ? titleCase(head.replace(/[^A-Za-z0-9&'.\s-]/g, "").trim()) : undefined;
 }

@@ -7,6 +7,8 @@ import {
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { useAlerts, AlertItem } from "../../lib/useAlerts";
+import { reminderPrefs } from "../../lib/reminderPrefs";
+import { LEAD_CHOICES, leadLabel } from "../../lib/reminderPlan";
 import { getNotificationPermission, requestNotificationPermission, PermissionState, logToInbox } from "../../lib/notifications";
 import { prefs, playTone, feedback, tap } from "../../lib/feedback";
 import { isNative } from "../../lib/native";
@@ -33,6 +35,10 @@ export function Notifications({ onBack }: { onBack: () => void }) {
   const [perm, setPerm] = useState<PermissionState>("prompt");
   const [sounds, setSounds] = useState(prefs.sounds);
   const [haptics, setHaptics] = useState(prefs.haptics);
+  const [remOn, setRemOn] = useState(reminderPrefs.enabled);
+  const [askOn, setAskOn] = useState(reminderPrefs.askAfterExpense);
+  const [lead, setLead] = useState(reminderPrefs.leadDays);
+  const [remTime, setRemTime] = useState(reminderPrefs.time);
 
   useEffect(() => { getNotificationPermission().then(setPerm); }, []);
 
@@ -157,6 +163,26 @@ export function Notifications({ onBack }: { onBack: () => void }) {
             ))
           )}
 
+          {/* Bill reminders */}
+          <div className="rounded-2xl bg-card border border-border/60 p-4 space-y-3">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Bill reminders</div>
+            <Toggle icon={Bell} label="Remind me about bills (works when the app is closed)" on={remOn} onChange={(v) => { reminderPrefs.setEnabled(v); setRemOn(v); }} />
+            <Toggle icon={Bell} label="Ask “remind me next time?” after each expense" on={askOn} onChange={(v) => { reminderPrefs.setAskAfterExpense(v); setAskOn(v); }} />
+            <div className="pt-1">
+              <div className="text-xs font-semibold text-slate-700 mb-2">New reminders alert me</div>
+              <div className="flex flex-wrap gap-1.5">
+                {LEAD_CHOICES.map((d) => (
+                  <button key={d} onClick={() => { tap(); reminderPrefs.setLeadDays(d); setLead(d); }} className={`px-3 py-2 text-xs font-semibold rounded-xl border active:scale-95 ${lead === d ? "bg-primary text-primary-foreground border-primary" : "bg-card text-muted-foreground"}`}>{d === 7 ? "A week before" : leadLabel(d)}</button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 mt-3 text-xs font-semibold text-slate-700">
+                <span>at</span>
+                <input type="time" value={remTime} onChange={(e) => { const v = e.target.value || reminderPrefs.time; reminderPrefs.setTime(v); setRemTime(v); }} className="h-10 rounded-xl border border-border bg-background px-3 text-sm" aria-label="Default time for bill alerts" />
+              </div>
+              <div className="text-[11px] text-muted-foreground mt-2">Each reminder can use its own timing. Edit one from Notes & reminders.</div>
+            </div>
+          </div>
+
           {/* Preferences */}
           <div className="rounded-2xl bg-card border border-border/60 p-4 space-y-3">
             <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Feedback</div>
@@ -166,11 +192,11 @@ export function Notifications({ onBack }: { onBack: () => void }) {
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 mb-2"><Music className="size-3.5" /> Reminder sound (when app is closed)</div>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { id: "default", label: "System" },
-                  { id: "beep", label: "Beep" },
-                  { id: "bell", label: "Bell" },
                   { id: "chime", label: "Chime" },
-                  { id: "electronic", label: "Electronic" },
+                  { id: "bell", label: "Bell" },
+                  { id: "beep", label: "Beep" },
+                  { id: "electronic", label: "Pulse" },
+                  { id: "default", label: "Phone's own" },
                 ].map((snd) => (
                   <button
                     key={snd.id}

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Navigate, useNavigate, useParams } from "react-router";
+import { Navigate, useNavigate, useNavigationType, useParams } from "react-router";
+import { Toaster } from "sonner";
 import { Loader2, WifiOff, RefreshCw } from "lucide-react";
 import { BottomNav } from "./components/BottomNav";
 import { QuickAdd } from "./components/QuickAdd";
@@ -48,6 +49,12 @@ import { StoreProvider, useStore } from "./store";
 import { EntitlementsProvider } from "./lib/useEntitlements";
 import { api } from "./lib/api";
 import { SIPTracker } from "./components/screens/SIPTracker";
+import { ChitFunds } from "./components/screens/ChitFunds";
+import { CALens } from "./components/screens/CALens";
+import { AiSettings } from "./components/screens/AiSettings";
+import { PasteMessages } from "./components/screens/PasteMessages";
+import { listenForShares } from "./lib/shareTarget";
+import { ReminderOffer } from "./components/ReminderOffer";
 import { Insurance } from "./components/screens/Insurance";
 import { Investments } from "./components/screens/Investments";
 import { Gold } from "./components/screens/Gold";
@@ -68,7 +75,8 @@ import { LanguageSettings } from "./components/screens/LanguageSettings";
 import { NotesScreen } from "./components/screens/NotesScreen";
 import { FeedbackLayer } from "./components/FeedbackLayer";
 import { LanguageProvider } from "./lib/i18n";
-import { exitApp, initBackButton } from "./lib/native";
+import { exitApp, initBackButton, initDeepLinks } from "./lib/native";
+import { notify } from "./lib/notify";
 import { showBanner } from "./components/InAppBanner";
 import { loadAuthSession, saveAuthSession } from "./lib/localCache";
 import { drainOfflineQueue } from "./store";
@@ -127,6 +135,19 @@ export function UserApp() {
   const { screen: routeScreen } = useParams<{ screen?: string }>();
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
+
+  // Password-reset e-mail links: the APK receives them as a deep link, the web build as a PASSWORD_RECOVERY event.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    initDeepLinks(async (url) => {
+      const result = await api.handleAuthLink(url);
+      if (result?.kind === "recovery") setRecoveryMode(true);
+      else if (result?.kind === "error") notify.error("Reset link problem", result.message);
+    }).then((off) => { if (cancelled) off?.(); else stop = off; });
+    const sub = api.onPasswordRecovery(() => setRecoveryMode(true));
+    return () => { cancelled = true; stop?.(); sub.data.subscription.unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     // Check if we are in recovery mode (user clicked email link)
@@ -202,53 +223,59 @@ export function UserApp() {
 
 function UpdatePassword({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const valid = password.length >= 8 && password === confirm;
 
   const submit = async () => {
     setLoading(true);
     setErr(null);
     try {
       await api.updatePassword(password);
+      notify.success("Password updated", "You're signed in with your new password.");
       onDone();
     } catch (e: any) {
-      setErr(e.message || "Failed to update password");
+      const msg = /same password|different from the old/i.test(e?.message || "")
+        ? "Choose a password you haven't used before."
+        : e?.message || "Failed to update password";
+      setErr(msg);
+      notify.error("Could not update password", msg);
     } finally {
       setLoading(false);
     }
   };
 
+  const input = "mt-1.5 w-full bg-card border border-border rounded-xl px-4 py-3 text-[14.5px] outline-none placeholder:text-slate-400";
   return (
-    <div className="flex-1 flex flex-col px-7 pt-16 pb-8 bg-gradient-to-b from-primary/5 to-background">
-      <div className="mb-8 mt-10">
-        <h1 className="font-display" style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.15 }}>
-          Update your password
-        </h1>
-        <p className="text-sm text-muted-foreground mt-2">
-          Please enter your new password below.
-        </p>
+    <div className="flex-1 flex flex-col px-7 pt-16 pb-8 bg-background fade-up">
+      <span className="flex size-11 items-center justify-center rounded-full bg-primary">
+        <span className="size-3.5 rounded-full bg-white" />
+      </span>
+      <div className="mb-8 mt-8">
+        <h1 className="display-tight" style={{ fontSize: 30, fontWeight: 700 }}>Set a new password</h1>
+        <p className="text-sm text-muted-foreground mt-2">Choose a strong password you don't use anywhere else.</p>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         <label className="block">
-          <span className="text-xs text-muted-foreground" style={{ fontWeight: 600 }}>New Password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            className="mt-1 w-full bg-card border border-border rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-          />
+          <span className="text-[13px] font-semibold text-slate-700">New password</span>
+          <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" className={input} />
+        </label>
+        <label className="block">
+          <span className="text-[13px] font-semibold text-slate-700">Confirm password</span>
+          <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Repeat password" className={input} />
+          {confirm && password !== confirm && <span className="mt-1.5 block text-xs text-rose-600">Passwords don't match.</span>}
         </label>
       </div>
 
-      {err && <div className="mt-3 text-xs text-rose-600 bg-rose-50 rounded-lg p-2.5">{err}</div>}
+      {err && <div role="alert" className="mt-3 text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-2xl p-3">{err}</div>}
 
       <button
         onClick={submit}
-        disabled={loading || !password}
-        className="w-full mt-6 bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
-        style={{ fontWeight: 700 }}
+        disabled={loading || !valid}
+        className="w-full mt-6 bg-primary text-primary-foreground rounded-full py-3.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
       >
         {loading && <Loader2 className="size-4 animate-spin" />}
         Update password
@@ -259,6 +286,7 @@ function UpdatePassword({ onDone }: { onDone: () => void }) {
 
 function AuthedShell() {
   const navigate = useNavigate();
+  const navType = useNavigationType();
   const { screen: routeScreen, id } = useParams<{ screen?: string; id?: string }>();
   const [addOpen, setAddOpen] = useState(false);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
@@ -318,10 +346,16 @@ function AuthedShell() {
   storeRef.current = store;
 
   // Re-schedule device notifications whenever anything with a due date changes.
+  const [reminderPrefsTick, setReminderPrefsTick] = useState(0);
+  useEffect(() => {
+    const on = () => setReminderPrefsTick((n) => n + 1);
+    window.addEventListener("ls-reminder-prefs", on);
+    return () => window.removeEventListener("ls-reminder-prefs", on);
+  }, []);
   useEffect(() => {
     if (!store.ready) return;
     import("./lib/notifications").then((m) => m.syncNotifications(store));
-  }, [
+  }, [reminderPrefsTick, 
     store.ready, store.notes, store.structuredLoans, store.subscriptions, store.creditCards, store.insurance,
     store.householdReminders, store.societyNotices, store.loans, store.notificationSound,
   ]);
@@ -354,6 +388,9 @@ function AuthedShell() {
   const fallbackBack = () => navigate(screenPath("profile"));
   const isTab = tabRoots.includes(screen);
   const activeTab = screen === "goals" ? "buckets" : isTab ? screen : "dashboard";
+
+  // Text shared into LiveSync from another app (a bank alert) opens the review screen. Nothing is saved without a tap.
+  useEffect(() => listenForShares(() => navigate(screenPath("paste"))), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep Android back inside the product. A modal closes first, then a screen
   // navigates back; the home screen requires a deliberate second press to exit.
@@ -412,7 +449,10 @@ function AuthedShell() {
       <OfflineBanner />
       {/* ── In-app notification banner ── */}
       <InAppBanner />
+      <Toaster position="top-center" offset={14} closeButton visibleToasts={3} toastOptions={{ classNames: { toast: "!rounded-2xl !border !border-border !bg-card !text-foreground", title: "!font-semibold", description: "!text-muted-foreground" } }} />
 
+      {/* Direction-aware page transition: tabs fade up, drilling in slides from the right, back slides from the left. */}
+      <div key={`${screen}/${id ?? ""}`} className={`page-transition ${isTab ? "pt-fade" : navType === "POP" ? "pt-back" : "pt-forward"}`}>
       {screen === "dashboard" && <Dashboard go={go} onAdd={openQuickAdd} />}
       {screen === "household" && <Household onBack={onBack} go={go} />}
       {screen === "transactions" && <Transactions />}
@@ -450,6 +490,10 @@ function AuthedShell() {
       {screen === "pricing" && <Pricing onBack={onBack} />}
       {screen === "feedback" && <Feedback onBack={onBack} />}
       {screen === "sip" && <SIPTracker onBack={onBack} />}
+      {screen === "chits" && <ChitFunds onBack={onBack} />}
+      {screen === "calens" && <CALens onBack={onBack} go={go} />}
+      {screen === "ai-settings" && <AiSettings onBack={onBack} />}
+      {screen === "paste" && <PasteMessages onBack={onBack} />}
       {screen === "insurance" && <Insurance onBack={onBack} />}
       {screen === "investments" && <Investments onBack={onBack} />}
       {screen === "gold" && <Gold onBack={onBack} />}
@@ -468,9 +512,11 @@ function AuthedShell() {
       {screen === "language-settings" && <LanguageSettings onBack={onBack} />}
       {screen === "notes" && <NotesScreen onBack={onBack} />}
       {screen === "figma" && <FigmaFrameDemo />}
+      </div>
 
       {routeScreen === "figma" ? null : <BottomNav active={activeTab} onChange={go} onAdd={openQuickAdd} hideFab={screen === "notes"} />}
       <QuickAdd open={addOpen} onClose={closeQuickAdd} />
+      <ReminderOffer />
       <FeedbackLayer />
     </>
   );
@@ -514,6 +560,10 @@ const screenIds: ScreenId[] = [
   "pricing",
   "feedback",
   "sip",
+  "chits",
+  "calens",
+  "ai-settings",
+  "paste",
   "insurance",
   "investments",
   "gold",

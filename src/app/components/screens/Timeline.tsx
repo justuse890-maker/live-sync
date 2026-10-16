@@ -11,7 +11,10 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
-import { buildTimeline, TimelineEvent, lifestyleInflation } from "../../lib/intelligence";
+import { buildTimeline, TimelineEvent, lifestyleInflation, localISO, NON_CASH_KINDS } from "../../lib/intelligence";
+
+const isInflow = (e: TimelineEvent) => e.inflow ?? e.kind === "income";
+const isCash = (e: TimelineEvent) => !NON_CASH_KINDS.includes(e.kind);
 
 const icons: Record<TimelineEvent["kind"], any> = {
   income: ArrowDownLeft,
@@ -124,14 +127,14 @@ export function Timeline({ onBack }: { onBack: () => void }) {
     ],
   );
 
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = localISO();
   const next30Date = new Date();
   next30Date.setDate(next30Date.getDate() + 30);
-  const next30Key = next30Date.toISOString().slice(0, 10);
+  const next30Key = localISO(next30Date);
 
   const next7Date = new Date();
   next7Date.setDate(next7Date.getDate() + 7);
-  const next7Key = next7Date.toISOString().slice(0, 10);
+  const next7Key = localISO(next7Date);
 
   // Filtered timeline events
   const filtered = events
@@ -142,18 +145,19 @@ export function Timeline({ onBack }: { onBack: () => void }) {
 
   // ─── 30-Day Cash Flow Forecast Breakdown ─────────────────────────────
   const upcoming30Events = events.filter((e) => e.date >= todayKey && e.date <= next30Key);
+  // Goal deadlines and tax dates are reminders, not scheduled debits — they stay on the timeline but out of the forecast.
   const upcomingInflow = upcoming30Events
-    .filter((e) => e.kind === "income")
+    .filter((e) => isCash(e) && isInflow(e))
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const upcomingOutflow = upcoming30Events
-    .filter((e) => e.kind !== "income")
+    .filter((e) => isCash(e) && !isInflow(e))
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const projectedNet = upcomingInflow - upcomingOutflow;
 
-  const dueThisWeekEvents = events.filter((e) => e.date >= todayKey && e.date <= next7Key && e.kind !== "income");
+  const dueThisWeekEvents = events.filter((e) => e.date >= todayKey && e.date <= next7Key && isCash(e) && !isInflow(e));
   const dueThisWeekTotal = dueThisWeekEvents.reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  const dueTodayEvents = events.filter((e) => e.date === todayKey && e.kind !== "income");
+  const dueTodayEvents = events.filter((e) => e.date === todayKey && isCash(e) && !isInflow(e));
   const dueTodayTotal = dueTodayEvents.reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
   // ─── Flow series for visual trajectory ────────────────────────────────
@@ -166,7 +170,7 @@ export function Timeline({ onBack }: { onBack: () => void }) {
     for (const e of events) {
       const k = map[e.date] ?? (map[e.date] = { count: 0, net: 0 });
       k.count += 1;
-      if (e.amount) k.net += e.kind === "income" ? e.amount : -e.amount;
+      if (e.amount && isCash(e)) k.net += isInflow(e) ? e.amount : -e.amount;
     }
     return map;
   }, [events]);
@@ -176,7 +180,7 @@ export function Timeline({ onBack }: { onBack: () => void }) {
     for (let i = -3; i < 25; i++) {
       const d = new Date();
       d.setDate(d.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
+      const iso = localISO(d);
       out.push({
         date: iso,
         day: d.getDate(),
@@ -479,7 +483,7 @@ export function Timeline({ onBack }: { onBack: () => void }) {
               const isToday = date === todayKey;
               const isPast = date < todayKey;
               const dayNet = items.reduce(
-                (s, e) => (e.amount ? s + (e.kind === "income" ? e.amount : -e.amount) : s),
+                (s, e) => (e.amount && isCash(e) ? s + (isInflow(e) ? e.amount : -e.amount) : s),
                 0,
               );
 
@@ -496,7 +500,7 @@ export function Timeline({ onBack }: { onBack: () => void }) {
                     style={isToday ? { boxShadow: "0 0 0 4px rgba(30,64,175,0.18)" } : undefined}
                   >
                     <span className="text-[10px]" style={{ fontWeight: 700 }}>
-                      {new Date(date).getDate()}
+                      {Number(date.slice(8, 10))}
                     </span>
                   </div>
 
@@ -555,9 +559,9 @@ export function Timeline({ onBack }: { onBack: () => void }) {
                             {e.amount != null && (
                               <div
                                 className="text-sm font-bold"
-                                style={{ color: e.kind === "income" ? "#059669" : "var(--foreground)" }}
+                                style={{ color: isInflow(e) ? "#059669" : "var(--foreground)" }}
                               >
-                                {e.kind === "income" ? "+" : "−"}{inr(e.amount)}
+                                {isInflow(e) ? "+" : "−"}{inr(e.amount)}
                               </div>
                             )}
                             {e.linkScreen && (
@@ -605,15 +609,6 @@ export function Timeline({ onBack }: { onBack: () => void }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl bg-white/10 backdrop-blur-sm py-2">
-      <div className="text-base" style={{ fontWeight: 700 }}>{value}</div>
-      <div className="text-[10px] uppercase tracking-wider opacity-80" style={{ fontWeight: 600 }}>{label}</div>
-    </div>
-  );
-}
-
 function prettyDate(d: string) {
   const [y, mo, dy] = d.split("-").map(Number);
   const date = new Date(y, mo - 1, dy); // local — avoids UTC-midnight timezone shift
@@ -633,9 +628,9 @@ function buildFlowSeries(events: TimelineEvent[], daysBack: number, daysFwd: num
   for (let i = -daysBack; i < daysFwd; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
-    const dayEvents = events.filter((e) => e.date === iso && e.amount);
-    const dayNet = dayEvents.reduce((s, e) => s + (e.kind === "income" ? e.amount! : -e.amount!), 0);
+    const iso = localISO(d);
+    const dayEvents = events.filter((e) => e.date === iso && e.amount && isCash(e));
+    const dayNet = dayEvents.reduce((s, e) => s + (isInflow(e) ? e.amount! : -e.amount!), 0);
     running += dayNet;
     out.push({
       date: iso,
@@ -644,12 +639,4 @@ function buildFlowSeries(events: TimelineEvent[], daysBack: number, daysFwd: num
     });
   }
   return out;
-}
-
-function countNextDays(events: TimelineEvent[], n: number) {
-  const today = new Date();
-  const end = new Date(today); end.setDate(end.getDate() + n);
-  const a = today.toISOString().slice(0, 10);
-  const b = end.toISOString().slice(0, 10);
-  return events.filter((e) => e.date >= a && e.date <= b).length;
 }

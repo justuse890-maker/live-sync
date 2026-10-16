@@ -7,15 +7,29 @@ android {
         applicationId "com.livesync.ai"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 8
-        versionName "2.4.0"
+        versionCode 9
+        versionName "2.4.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Release signing comes from environment variables so no keystore or password is ever committed.
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("LIVESYNC_KEYSTORE")
+            if (ksPath) {
+                storeFile file(ksPath)
+                storePassword System.getenv("LIVESYNC_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("LIVESYNC_KEY_ALIAS")
+                keyPassword System.getenv("LIVESYNC_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
+            if (System.getenv("LIVESYNC_KEYSTORE")) signingConfig signingConfigs.release
+            debuggable false
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

@@ -8,9 +8,20 @@ import { Capacitor } from "@capacitor/core";
  * SharedPreferences are guaranteed to survive APK updates and WebView cache wipes on Android.
  * On web browser environments, it gracefully falls back to localStorage.
  */
+/**
+ * Auth/session keys hold refresh tokens. SharedPreferences are included in Android
+ * cloud backup / device transfer, so these keys live in WebView localStorage only
+ * (not backed up) and any copy left in Preferences by older builds is purged.
+ */
+const isSecretKey = (key: string) => key.startsWith("livesync-auth") || key.startsWith("sb-");
+
 export const nativeStorage = {
   getItem: async (key: string): Promise<string | null> => {
     try {
+      if (isSecretKey(key)) {
+        if (Capacitor.isNativePlatform()) await Preferences.remove({ key }).catch(() => {});
+        return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+      }
       if (Capacitor.isNativePlatform()) {
         const { value } = await Preferences.get({ key });
         // Migration helper: If not found in Preferences, check localStorage and migrate
@@ -32,7 +43,7 @@ export const nativeStorage = {
 
   setItem: async (key: string, value: string): Promise<void> => {
     try {
-      if (Capacitor.isNativePlatform()) {
+      if (Capacitor.isNativePlatform() && !isSecretKey(key)) {
         await Preferences.set({ key, value });
       }
       if (typeof localStorage !== "undefined") {

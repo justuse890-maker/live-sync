@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  ArrowRightLeft,
   Search,
   ArrowDownLeft,
   ArrowDownRight,
@@ -46,6 +47,8 @@ import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { Tx, canEditTx, useStore } from "../../store";
 import { EditTransaction } from "../EditTransaction";
+import { TransferSuggestions, AddTransferSheet, TransferDetail } from "../TransferPanel";
+import { TxKindBadge } from "../TxKindBadge";
 import { useTranslation } from "../../lib/i18n";
 import {
   getMonthKey,
@@ -116,7 +119,7 @@ const paymentShort = (m: string) =>
   ({ cash: "Cash", upi: "UPI", credit: "Credit", debit: "Debit", other: "Other" } as Record<string, string>)[m] || m;
 
 export function Transactions() {
-  const { transactions, selectedMonth, setSelectedMonth, creditCards, structuredLoans, properties } = useStore();
+  const { transactions, allTransactions, selectedMonth, setSelectedMonth, creditCards, structuredLoans, properties } = useStore();
   const cardMap = Object.fromEntries(creditCards.map((c) => [c.id, c]));
   const loanMap = Object.fromEntries(structuredLoans.map((l) => [l.id, l]));
   const propertyMap = Object.fromEntries(properties.map((p) => [p.id, p]));
@@ -125,6 +128,9 @@ export function Transactions() {
   const [cat, setCat] = useState("All");
   const [modeFilter, setModeFilter] = useState<string>("All");
   const [editing, setEditing] = useState<Tx | null>(null);
+  const [showTransfers, setShowTransfers] = useState(false);
+  const [transferSheet, setTransferSheet] = useState(false);
+  const [transferView, setTransferView] = useState<Tx | null>(null);
   const { t } = useTranslation();
 
   // Cycle Months
@@ -141,6 +147,12 @@ export function Transactions() {
     return transactions.filter((t) => getMonthKey(t.date) === selectedMonth);
   }, [transactions, selectedMonth]);
 
+  // Own-account transfers this month — shown only when the user asks, never counted.
+  const monthlyTransfers = useMemo(
+    () => allTransactions.filter((t) => t.isTransfer && getMonthKey(t.date) === selectedMonth),
+    [allTransactions, selectedMonth],
+  );
+
   // Totals for the entire month
   const monthTotalIn = useMemo(() => {
     return monthlyTx.filter((t) => t.type === "income").reduce((s, t) => s + Math.abs(t.amount), 0);
@@ -152,7 +164,7 @@ export function Transactions() {
 
   // ─── 2. Filtered Transactions (by Search, Category, Payment Mode) ───────────
   const filtered = useMemo(() => {
-    return monthlyTx.filter((t) => {
+    return (showTransfers ? [...monthlyTx, ...monthlyTransfers] : monthlyTx).filter((t) => {
       const matchQ =
         !q ||
         t.title.toLowerCase().includes(q.toLowerCase()) ||
@@ -165,7 +177,7 @@ export function Transactions() {
         (modeFilter.toLowerCase() === "credit" && Boolean(t.creditCardId));
       return matchQ && matchC && matchMode;
     });
-  }, [monthlyTx, q, cat, modeFilter]);
+  }, [monthlyTx, monthlyTransfers, showTransfers, q, cat, modeFilter]);
 
   // Grouped by Date for Timeline List
   const grouped = useMemo(() => {
@@ -173,13 +185,13 @@ export function Transactions() {
       const k = toISODate(t.date);
       if (!acc[k]) acc[k] = { items: [], dayTotal: 0 };
       acc[k].items.push(t);
-      if (t.type === "expense") acc[k].dayTotal += Math.abs(t.amount);
+      if (t.type === "expense" && !t.isTransfer) acc[k].dayTotal += Math.abs(t.amount);
       return acc;
     }, {});
   }, [filtered]);
 
-  const totalIn = filtered.filter((t) => t.type === "income").reduce((s, t) => s + Math.abs(t.amount), 0);
-  const totalOut = filtered.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
+  const totalIn = filtered.filter((t) => !t.isTransfer && t.type === "income").reduce((s, t) => s + Math.abs(t.amount), 0);
+  const totalOut = filtered.filter((t) => !t.isTransfer && t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
 
   // ─── 3. Visual Spending Categories Breakdown ────────────────────────────────
   const categoryBreakdown = useMemo(() => {
@@ -622,6 +634,21 @@ export function Transactions() {
                 </div>
               )}
 
+              <TransferSuggestions />
+
+              {/* Own-account transfers: hidden by default, never counted */}
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <button onClick={() => setTransferSheet(true)} className="inline-flex items-center gap-1.5 font-bold text-primary px-3 py-2 rounded-xl border border-primary/20 bg-primary/5 active:scale-95">
+                  <ArrowRightLeft className="size-3.5" /> Move own money
+                </button>
+                {(monthlyTransfers.length > 0 || showTransfers) && (
+                  <label className="inline-flex items-center gap-2 text-muted-foreground font-medium cursor-pointer">
+                    <input type="checkbox" checked={showTransfers} onChange={(e) => setShowTransfers(e.target.checked)} />
+                    Show {monthlyTransfers.length} transfer{monthlyTransfers.length === 1 ? "" : "s"} (not counted)
+                  </label>
+                )}
+              </div>
+
               {/* Transaction Chronological Feed Grouped by Date */}
               <div className="space-y-4">
                 {Object.entries(grouped).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([date, groupData]) => (
@@ -642,8 +669,8 @@ export function Transactions() {
                         return (
                           <button
                             key={t.id}
-                            onClick={() => setEditing(t)}
-                            className="w-full text-left flex items-center gap-3 p-3.5 hover:bg-muted/40 transition active:bg-muted/60"
+                            onClick={() => (t.isTransfer ? setTransferView(t) : setEditing(t))}
+                            className={`w-full text-left flex items-center gap-3 p-3.5 hover:bg-muted/40 transition active:bg-muted/60 ${t.isTransfer ? "opacity-70" : ""}`}
                           >
                             {/* Category Icon Badge */}
                             <div
@@ -672,6 +699,7 @@ export function Transactions() {
 
                               <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5 truncate">
                                 <span className="font-medium text-slate-600">{t.category}</span>
+                                <TxKindBadge tx={t as any} />
                                 {((t.loanId && loanMap[t.loanId]) || (t.creditCardId && cardMap[t.creditCardId]) || (t.payments && t.payments.length > 0)) && (
                                   <>
                                     <span>&middot;</span>
@@ -761,6 +789,8 @@ export function Transactions() {
         </div>
       </Screen>
       <EditTransaction tx={editing} onClose={() => setEditing(null)} />
+      <AddTransferSheet open={transferSheet} onClose={() => setTransferSheet(false)} />
+      <TransferDetail tx={transferView} onClose={() => setTransferView(null)} />
     </>
   );
 }

@@ -6,7 +6,7 @@
     "androidScheme": "https"
   },
   "android": {
-    "allowMixedContent": true,
+    "allowMixedContent": false,
     "captureInput": true,
     "webContentsDebuggingEnabled": false,
     "adjustMarginsForEdgeToEdge": "auto"

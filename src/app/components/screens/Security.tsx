@@ -183,7 +183,7 @@ export function Security({ onBack }: { onBack: () => void }) {
               <div className="flex items-center gap-1.5 mb-1 text-foreground" style={{ fontWeight: 600 }}>
                 <Server className="size-3" /> How AI works
               </div>
-              Merchant categorisation can use Google Gemini through LiveSync. Bring-your-own-key Coach uses Groq directly from the app. Each provider handles submitted data under its own terms and privacy policy.
+              LiveSync runs no AI service. Coach, import clean-up and message drafting use the AI provider and key you connect yourself, directly from this phone. That provider handles submitted data under its own terms and privacy policy.
             </div>
           </Section>
 

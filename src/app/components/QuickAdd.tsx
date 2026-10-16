@@ -4,6 +4,10 @@ import { X, ArrowDownLeft, ArrowDownRight, ArrowUpRight, ArrowLeftRight, Loader2
 import { PaymentMode, PaymentSplit, useStore } from "../store";
 import { inr } from "./types";
 import { CaptureVoiceScan } from "./CaptureVoiceScan";
+import { usePersona } from "../lib/usePersona";
+import { offerReminder } from "../lib/reminderOfferBus";
+import type { Scope } from "../lib/persona";
+import { TransferPicker, useAccounts, CASH, transferLabelFor } from "./TransferPanel";
 import { hapticLight } from "../lib/native";
 import { feedback } from "../lib/feedback";
 import { numberToIndianWords, sanitizeAmountInput, validateTransactionAmount } from "../lib/currencyUtils";
@@ -15,6 +19,7 @@ const loanTypeIcons: Record<string, { label: string; icon: any; color: string }>
   education_loan:        { label: "Education Loan",        icon: GraduationCap,  color: "#059669" },
   property_registration: { label: "Property Registration", icon: Building2,      color: "#D97706" },
   builder_demand:        { label: "Builder Demand",        icon: Building2,      color: "#DC2626" },
+  bnpl:                  { label: "BNPL / Pay-later",      icon: CreditCard,     color: "#BE185D" },
   other:                 { label: "Other Loan",            icon: CreditCard,     color: "#64748B" },
 };
 
@@ -28,7 +33,7 @@ const paymentMeta: Record<PaymentMode, { label: string; icon: any; tint: string 
 const paymentOrder: PaymentMode[] = ["cash", "upi", "credit", "debit", "other"];
 
 export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { addTransaction, categories, addCategory, creditCards, structuredLoans, properties } = useStore();
+  const { addTransaction, addTransfer, categories, addCategory, creditCards, structuredLoans, properties } = useStore();
   const [tab, setTab] = useState<"manual" | "voice" | "scan">("manual");
   const [type, setType] = useState<"expense" | "income" | "transfer">("expense");
   const [amount, setAmount] = useState("");
@@ -45,6 +50,11 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
   const [newCat, setNewCat] = useState("");
   const [showNewCat, setShowNewCat] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [trFrom, setTrFrom] = useState("");
+  const [trTo, setTrTo] = useState("");
+  const trAccounts = useAccounts();
+  const { persona } = usePersona();
+  const [scope, setScope] = useState<Scope>(() => { try { return localStorage.getItem("ls_last_scope") === "business" ? "business" : "personal"; } catch { return "personal"; } });
 
   const total = Number(amount || 0);
   const amountValidation = useMemo(() => validateTransactionAmount(total, splitOn ? undefined : singleMode), [total, splitOn, singleMode]);
@@ -87,6 +97,23 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       });
       return;
     }
+    if (type === "transfer") {
+      if (!trFrom || !trTo || trFrom === trTo) {
+        feedback({ kind: "error", title: "Choose two different places", subtitle: "Pick where the money moved from and to" });
+        return;
+      }
+      setSaving(true);
+      await addTransfer({
+        amount: total, date: todayISO(),
+        fromAccountId: trFrom === CASH ? undefined : trFrom, toAccountId: trTo === CASH ? undefined : trTo,
+        fromLabel: transferLabelFor(trAccounts, trFrom), toLabel: transferLabelFor(trAccounts, trTo),
+      });
+      setTrFrom(""); setTrTo("");
+      reset();
+      setSaving(false);
+      onClose();
+      return;
+    }
     setSaving(true);
     const isIncome = type === "income";
     const payments: PaymentSplit[] = isIncome
@@ -115,7 +142,11 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       loanId: (!isIncome && (cat === "EMI" || selectedLoanId)) ? (selectedLoanId || undefined) : undefined,
       loanPaymentType: (!isIncome && selectedLoanId) ? loanPaymentType : undefined,
       notes: notes ? notes.trim() : undefined,
+      scope: persona === "business" ? scope : undefined,
     }).catch(() => {}); // errors handled in store
+
+    // Offer "remind me next time?" for ordinary spending (the sheet decides whether one is already set).
+    if (!isIncome) offerReminder({ type: "expense", amount: total, date: todayISO(), title: (merchant || defaultTitle).trim(), merchant: merchant ? merchant.trim() : undefined, category: cat, loanId: (cat === "EMI" || selectedLoanId) ? (selectedLoanId || undefined) : undefined });
 
     // Tone + haptic + animated confirmation are fired by the store (feedback.ts)
     reset();
@@ -222,6 +253,16 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
             </div>
           )}
         </div>
+
+        {type !== "transfer" && persona === "business" && (
+          <div className="flex bg-muted rounded-xl p-1 mb-3 text-xs font-bold" role="group" aria-label="Business or personal">
+            {(["personal", "business"] as const).map((sc) => (
+              <button key={sc} type="button" onClick={() => { setScope(sc); try { localStorage.setItem("ls_last_scope", sc); } catch { /* ignore */ } }} className={`flex-1 py-2 rounded-lg capitalize ${scope === sc ? "bg-card shadow-sm" : "text-muted-foreground"}`}>{sc}</button>
+            ))}
+          </div>
+        )}
+
+        {type === "transfer" && <TransferPicker from={trFrom} to={trTo} onFrom={setTrFrom} onTo={setTrTo} />}
 
         {type !== "transfer" && (
           <>
@@ -566,6 +607,9 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
         >
           {saving && <Loader2 className="size-4 animate-spin" />}
           {type === "income" ? "Save income" : type === "transfer" ? "Save transfer" : "Save expense"}
+        </button>
+        <button type="button" onClick={() => { onClose(); window.location.hash = "#/paste"; }} className="w-full text-center text-xs font-semibold text-primary py-3">
+          Have bank alerts? Paste them instead
         </button>
         </>}
       </div>

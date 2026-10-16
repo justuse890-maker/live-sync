@@ -6,6 +6,6 @@
 export const isInvestorDemo = import.meta.env.VITE_INVESTOR_DEMO === "true";
 
 export const investorDemoCredentials = {
-  email: import.meta.env.VITE_DEMO_EMAIL ?? "investor.demo@livesync.example",
-  password: import.meta.env.VITE_DEMO_PASSWORD ?? "LiveSyncDemo2026!",
+  email: import.meta.env.VITE_DEMO_EMAIL ?? "",
+  password: import.meta.env.VITE_DEMO_PASSWORD ?? "",
 };

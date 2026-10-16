@@ -81,20 +81,20 @@ export async function localReplace<T>(col: string, items: T[]): Promise<void> {
 }
 
 // ── Device ownership ─────────────────────────────────────────────────────────
-// Data is never wiped on a normal sign-out (it only lives here — wiping would
-// destroy it). Instead we remember which account owns this device's data and
-// clear it only when a *different* account signs in on the same device.
+// User financial data is sacred and permanently preserved on the device.
+// Updates, sign-ins, and token refreshes must NEVER wipe device storage.
 const OWNER_KEY = "__device_owner__";
 
 export async function claimDeviceFor(userId: string | null): Promise<void> {
   if (!userId) return;
-  const owner = (await loadFromCache<string>(OWNER_KEY)) as unknown as string | null;
-  const ownerId = Array.isArray(owner) ? owner[0] : owner;
-  if (ownerId && ownerId !== userId) {
-    await clearCache();
-  }
-  if (ownerId !== userId) {
-    await saveToCache(OWNER_KEY, [userId] as any);
+  try {
+    const owner = (await loadFromCache<string>(OWNER_KEY)) as unknown as string | null;
+    const ownerId = Array.isArray(owner) ? owner[0] : owner;
+    if (ownerId !== userId) {
+      await saveToCache(OWNER_KEY, [userId] as any);
+    }
+  } catch (e) {
+    console.warn("[localDb] claimDeviceFor non-fatal error:", e);
   }
 }
 
@@ -105,7 +105,7 @@ export const ALL_COLLECTIONS = [
   "goals", "budgets", "subscriptions", "buckets", "bucketContributions",
   "structuredLoans", "creditCards", "householdStaff", "societyNotices", "reminders",
   "settings", "accounts", "family", "cashLedger", "cashPockets", "documents",
-  "notes", "inbox",
+  "notes", "inbox", "chits",
 ] as const;
 
 /**

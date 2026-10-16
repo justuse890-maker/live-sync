@@ -4,12 +4,16 @@ import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
 import { lifestyleInflation, categoryInflation } from "../../lib/intelligence";
+import { wantsSeries, wantsVerdict, WANTS_NUDGE_GAP_PCT } from "../../lib/wantsTrend";
 
 export function LifestyleInflation({ onBack }: { onBack: () => void }) {
   const { transactions } = useStore();
   const r = useMemo(() => lifestyleInflation(transactions), [transactions]);
   const catInflation = useMemo(() => categoryInflation(transactions), [transactions]);
   const warning = r.verdict === "outpacing";
+  const wants = useMemo(() => wantsSeries(transactions), [transactions]);
+  const wv = useMemo(() => wantsVerdict(wants), [wants]);
+  const wantsMax = Math.max(40, ...wants.map((m) => m.sharePct ?? 0));
 
   return (
     <>
@@ -39,6 +43,28 @@ export function LifestyleInflation({ onBack }: { onBack: () => void }) {
             </div>
             <Bar incomeGrowth={r.incomeGrowth} expenseGrowth={r.expenseGrowth} />
           </div>
+
+          {/* Lifestyle share of income, 12 months */}
+          {wants.some((m) => m.sharePct !== null) && (
+            <div className="bg-card rounded-2xl p-4 border border-border/60 space-y-3">
+              <div>
+                <div className="text-sm" style={{ fontWeight: 700 }}>Lifestyle spending as a share of income</div>
+                <div className="text-[11px] text-muted-foreground">Dining, shopping, travel and fun, month by month. Guideline: 30% or less.</div>
+              </div>
+              <div className="relative flex items-end gap-1 h-24" role="img" aria-label="Lifestyle share of income for the last twelve months">
+                <div className="absolute inset-x-0 border-t border-dashed border-amber-400/70" style={{ bottom: `${(30 / wantsMax) * 100}%` }} title="30% guideline" />
+                {wants.map((m) => (
+                  <div key={m.key} className="relative flex-1 h-full flex flex-col items-center justify-end min-w-0" title={`${m.key}: ${m.sharePct === null ? "no income" : m.sharePct.toFixed(0) + "%"}`}>
+                    <div className={`w-full rounded-t ${m.sharePct !== null && m.sharePct > 30 ? "bg-amber-500" : "bg-sky-600/80"} min-h-[2px]`} style={{ height: `${m.sharePct === null ? 0 : (m.sharePct / wantsMax) * 100}%` }} />
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between text-[9px] text-muted-foreground"><span>{wants[0].key}</span><span>{wants[wants.length - 1].key}</span></div>
+              {wv.verdict === "outpacing" && <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3 leading-snug">Lifestyle spending grew <b>{wv.wantsGrowthPct!.toFixed(0)}%</b> while income grew <b>{wv.incomeGrowthPct!.toFixed(0)}%</b> (latest six months vs the six before) — more than {WANTS_NUDGE_GAP_PCT} points ahead. Worth a look before it becomes the new normal.</div>}
+              {wv.verdict === "easing" && <div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-xl p-3">Lifestyle spending is growing slower than income. Nicely done.</div>}
+              {wv.verdict === "not_enough_data" && <div className="text-[11px] text-muted-foreground">Needs about two months of income in each half of the year to compare growth.</div>}
+            </div>
+          )}
 
           {/* Per-category Inflation Breakdown */}
           {catInflation.length > 0 && (

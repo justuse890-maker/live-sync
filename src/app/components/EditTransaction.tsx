@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { X, Loader2, Trash2, Clock, Lock, Unlock, CreditCard, AlertTriangle, Banknote, Smartphone, Wallet, MoreHorizontal, Check, Home, Car, User, GraduationCap, Building2 } from "lucide-react";
 import { Tx, PaymentMode, PaymentSplit, canEditTx, txEditRemaining, useStore } from "../store";
 import { inr } from "./types";
+import { TAX_TAGS, TaxTag } from "../lib/taxTags";
+import { usePersona } from "../lib/usePersona";
 import { numberToIndianWords, sanitizeAmountInput, validateTransactionAmount } from "../lib/currencyUtils";
 
 const loanTypeIcons: Record<string, { label: string; icon: any; color: string }> = {
@@ -11,6 +13,7 @@ const loanTypeIcons: Record<string, { label: string; icon: any; color: string }>
   education_loan:        { label: "Education Loan",        icon: GraduationCap,  color: "#059669" },
   property_registration: { label: "Property Registration", icon: Building2,      color: "#D97706" },
   builder_demand:        { label: "Builder Demand",        icon: Building2,      color: "#DC2626" },
+  bnpl:                  { label: "BNPL / Pay-later",      icon: CreditCard,     color: "#BE185D" },
   other:                 { label: "Other Loan",            icon: CreditCard,     color: "#64748B" },
 };
 
@@ -33,6 +36,9 @@ export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () =>
   const [cat, setCat] = useState("Food");
   const [merchant, setMerchant] = useState("");
   const [notes, setNotes] = useState("");
+  const [taxTag, setTaxTag] = useState<TaxTag | undefined>(undefined);
+  const [scope, setScope] = useState<"personal" | "business" | undefined>(undefined);
+  const { persona } = usePersona();
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("upi");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
@@ -50,6 +56,8 @@ export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () =>
     setCat(tx.category);
     setMerchant(tx.merchant || "");
     setNotes(tx.notes || "");
+    setTaxTag(tx.taxTag);
+    setScope(tx.scope);
     setErr(null);
     setUnlocked(false);
     setConfirmDelete(false);
@@ -121,6 +129,8 @@ export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () =>
       amount: isIncome ? n : -n,
       merchant: merchant || undefined,
       notes: notes || undefined,
+      taxTag,
+      scope,
       creditCardId: !isIncome && paymentMode === "credit" && selectedCardId ? selectedCardId : undefined,
       loanId: !isIncome && (cat === "EMI" || selectedLoanId) ? (selectedLoanId || undefined) : undefined,
       loanPaymentType: !isIncome && selectedLoanId ? loanPaymentType : undefined,
@@ -578,6 +588,26 @@ export function EditTransaction({ tx, onClose }: { tx: Tx | null; onClose: () =>
             </Field>
           </>
         )}
+
+        {persona === "business" && (
+          <Field label="Business or personal">
+            <div className="flex bg-muted rounded-xl p-1 text-xs font-bold">
+              {(["personal", "business"] as const).map((sc) => (
+                <button key={sc} type="button" disabled={!editable} onClick={() => setScope(sc)} className={`flex-1 py-2 rounded-lg capitalize disabled:opacity-50 ${(scope ?? "personal") === sc ? "bg-card shadow-sm" : "text-muted-foreground"}`}>{sc}</button>
+              ))}
+            </div>
+          </Field>
+        )}
+
+        <Field label="Tax tag (optional)">
+          <div className="flex flex-wrap gap-1.5">
+            {TAX_TAGS.map((t) => (
+              <button key={t.id} type="button" disabled={!editable} title={t.hint} onClick={() => setTaxTag(taxTag === t.id ? undefined : t.id)}
+                className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold disabled:opacity-50 ${taxTag === t.id ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{t.label}</button>
+            ))}
+          </div>
+          <div className="text-[10px] text-muted-foreground mt-1">Marks this entry for year-end tax totals in CA Lens.</div>
+        </Field>
 
         <Field label="Notes">
           <textarea

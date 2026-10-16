@@ -2,6 +2,7 @@
 // wealth module. Keeping it framework-free makes it trivial to test and to
 // swap with a server-side implementation later.
 
+import { normKey } from "./safeText";
 import type { Tx } from "../store";
 import { getMonthKey } from "./dateUtils";
 
@@ -82,13 +83,58 @@ const SUB_BILLING_MULTIPLIER: Record<string, number> = {
   weekly: 52, monthly: 12, quarterly: 4, yearly: 1, annual: 1,
 };
 
+const SERVICE_FAMILIES: Array<{ id: string; label: string; rx: RegExp }> = [
+  { id: "video", label: "video streaming", rx: /netflix|prime\s*video|amazon\s*prime|hotstar|disney|sony\s*liv|zee\s*5|jio\s*cinema|jiohotstar|voot|mx\s*player|hoichoi|apple\s*tv|lionsgate|sun\s*nxt/i },
+  { id: "music", label: "music", rx: /spotify|youtube\s*music|apple\s*music|gaana|jio\s*saavn|saavn|wynk|amazon\s*music/i },
+  { id: "cloud", label: "cloud storage", rx: /icloud|google\s*one|dropbox|onedrive|mega\s*nz/i },
+];
+
+/**
+ * Two or more active subscriptions in the same family are worth a look. The estimate is conservative: it assumes the
+ * user keeps the most expensive one and counts only the cost of the rest.
+ */
+export function detectOverlappingServices(subscriptions: any[]): Leak[] {
+  const out: Leak[] = [];
+  const active = subscriptions.filter((s: any) => !["cancelled", "canceled", "paused", "ended"].includes(String(s.status || "").toLowerCase()));
+  for (const fam of SERVICE_FAMILIES) {
+    const members = active
+      .filter((s: any) => fam.rx.test(String(s.name || "")))
+      .map((s: any) => {
+        const cost = Number(s.amount ?? s.cost ?? 0);
+        const cycle = String(s.billing ?? s.cycle ?? s.period ?? "monthly").toLowerCase();
+        return { name: String(s.name), annual: cost * (SUB_BILLING_MULTIPLIER[cycle] ?? 12) };
+      })
+      .filter((m) => m.annual > 0);
+    if (members.length < 2) continue;
+    const sorted = [...members].sort((a, b) => b.annual - a.annual);
+    const annual = sorted.slice(1).reduce((sum, m) => sum + m.annual, 0);
+    out.push({
+      id: `dup-${fam.id}`,
+      title: `${members.length} ${fam.label} services`,
+      category: "Subscriptions",
+      annual,
+      tip: `You pay for ${members.map((m) => m.name).join(", ")}. If one covers what you watch or use, dropping the others frees about ₹${Math.round(annual).toLocaleString("en-IN")}/yr.`,
+      severity: annual > 6000 ? "high" : annual > 1500 ? "medium" : "low",
+    });
+  }
+  return out;
+}
+
 export function detectLeaks(
   transactions: Tx[],
   subscriptions: any[],
   assets: Asset[] = [],
   liabilities: Liability[] = [],
+  now: Date = new Date(),
 ): { leaks: Leak[]; totalAnnual: number } {
   const leaks: Leak[] = [];
+
+  // Spending rules look at the last three calendar months and work in MONTHLY averages. (They used to total the
+  // whole history and then multiply by 12, which overstated the yearly figure by the number of months of data.)
+  const windowStart = localISO(new Date(now.getFullYear(), now.getMonth() - 2, 1));
+  const recent = transactions.filter((t) => t.type === "expense" && String(t.date).slice(0, 10) >= windowStart);
+  const monthsObserved = Math.max(1, new Set(recent.map((t) => String(t.date).slice(0, 7))).size);
+  const monthlyOf = (pred: (t: Tx) => boolean) => recent.filter(pred).reduce((sum, t) => sum + Math.abs(t.amount), 0) / monthsObserved;
 
   // 1. Subscriptions: only flag explicitly-marked stale / unused / duplicate.
   //    Respect billing cycle (yearly subs aren't ×12).
@@ -116,10 +162,7 @@ export function detectLeaks(
 
   // 2. Food delivery / dining overspend — compare to a generous ₹6k/mo cap.
   const foodRx = /swiggy|zomato|dunzo|eatsure|faasos|box8|behrouz/i;
-  const food = transactions.filter((t) =>
-    t.type === "expense" && (foodRx.test(t.merchant || t.title || "") || t.category === "Food"),
-  );
-  const foodMonthly = food.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const foodMonthly = monthlyOf((t) => foodRx.test(t.merchant || t.title || "") || t.category === "Food");
   if (foodMonthly > 6000) {
     const excess = foodMonthly - 4500;
     leaks.push({
@@ -127,15 +170,14 @@ export function detectLeaks(
       title: "Food delivery overspend",
       category: "Dining",
       annual: excess * 12,
-      tip: `Cap delivery at ₹4,500/mo — you spent ₹${Math.round(foodMonthly).toLocaleString("en-IN")} this period.`,
+      tip: `Cap delivery at ₹4,500/mo — you have averaged ₹${Math.round(foodMonthly).toLocaleString("en-IN")} a month recently.`,
       severity: excess > 4000 ? "high" : "medium",
     });
   }
 
   // 3. Bank / ATM / GST charges
   const chargeRx = /\b(charge|fee|atm|gst|sms\s*charge|amc|annual\s*fee)\b/i;
-  const charges = transactions.filter((t) => t.type === "expense" && chargeRx.test(t.title || ""));
-  const chargesTotal = charges.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const chargesTotal = monthlyOf((t) => chargeRx.test(t.title || ""));
   if (chargesTotal > 200) {
     leaks.push({
       id: "bank-fees",
@@ -149,8 +191,7 @@ export function detectLeaks(
 
   // 4. Cab usage above ₹4k/mo
   const rideRx = /uber|ola|rapido|meru|namma\s*yatri/i;
-  const ride = transactions.filter((t) => t.type === "expense" && rideRx.test(t.merchant || t.title || ""));
-  const rideTotal = ride.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const rideTotal = monthlyOf((t) => rideRx.test(t.merchant || t.title || ""));
   if (rideTotal > 4000) {
     const excess = rideTotal - 2500;
     leaks.push({
@@ -286,6 +327,10 @@ export function detectLeaks(
     });
   }
 
+  // Overlapping services the user pays for twice (two streaming apps, two music apps, two cloud-storage plans)
+  const alreadyFlagged = new Set(stale.map((x: any) => x.id));
+  leaks.push(...detectOverlappingServices(subscriptions.filter((x: any) => !alreadyFlagged.has(x.id))));
+
   const totalAnnual = leaks.reduce((s, l) => s + l.annual, 0);
   return { leaks: leaks.sort((a, b) => b.annual - a.annual), totalAnnual };
 }
@@ -304,7 +349,7 @@ const FLOW_SAVINGS_CATEGORIES = new Set([
   "savings", "saving", "investment", "investments", "sip", "sips", "mutual fund",
   "mutual funds", "stocks", "shares", "gold", "silver", "crypto", "ppf", "epf",
   "vpf", "nps", "fd", "fixed deposit", "rd", "recurring deposit", "goal", "goals",
-  "emergency fund", "demat", "portfolio"
+  "emergency fund", "demat", "portfolio", "chit fund", "chit"
 ]);
 
 const FLOW_EMI_CATEGORIES = new Set([
@@ -312,39 +357,38 @@ const FLOW_EMI_CATEGORIES = new Set([
   "personal loan", "education loan", "credit card bill", "card bill", "debt"
 ]);
 
+export type FlowBucket = "emis" | "savings" | "needs" | "wants";
+
+/** Which of the four spending buckets one expense row belongs to. Shared by the monthly split and the CA statements. */
+export function classifyFlow(t: Pick<Tx, "title" | "merchant" | "category"> & { loanId?: string }): FlowBucket {
+  const category = (t.category || "").trim().toLowerCase();
+  const label = `${t.title || ""} ${t.merchant || ""} ${category}`.toLowerCase();
+
+  // 1. EMIs & Debt Repayment
+  if (
+    t.loanId ||
+    FLOW_EMI_CATEGORIES.has(category) ||
+    /\b(emi|loan repayment|loan emi|home loan|car loan|personal loan|credit card bill|cc bill|cred payment|hdfc card pay|icici card pay|sbi card pay|axis card pay|loan interest)\b/i.test(label)
+  ) return "emis";
+  // 2. Invested / SIPs / Savings
+  if (
+    FLOW_SAVINGS_CATEGORIES.has(category) ||
+    /\b(sip|investment|mutual fund|zerodha|groww|kuvera|indmoney|etf|gold purchase|ppf|epf|nps|fixed deposit|recurring deposit|demat|chit)\b/i.test(label)
+  ) return "savings";
+  // 3. Needs (Essentials: Housing, Groceries, Utilities, Bills, Health, Education, Commute, Insurance)
+  if (
+    FLOW_NEEDS_CATEGORIES.has(category) ||
+    /\b(rent|house rent|society maintenance|grocery|groceries|supermarket|vegetables|milk|dairy|blinkit|zepto|instamart|bigbasket|dmart|electricity|water bill|gas bill|lpg cylinder|cylinder|broadband|wifi|internet|mobile recharge|phone bill|recharge|airtel|jio|medical|medicine|pharmacy|chemist|apollo|pharmeasy|1mg|doctor|hospital|clinic|insurance|lic premium|health insurance|car insurance|term life|school fee|tuition|college fee|fuel|petrol|diesel|cng|fastag|toll|metro card|bus pass|auto fare)\b/i.test(label)
+  ) return "needs";
+  // 4. Default / Lifestyle: Food & Dining, Shopping, Entertainment, Travel, Leisure
+  return "wants";
+}
+
 export function needsWantsSavings(transactions: Tx[], monthKey: string) {
   const totals = { needs: 0, wants: 0, savings: 0, emis: 0 };
   for (const t of transactions) {
     if (t.type !== "expense" || getMonthKey(t.date) !== monthKey) continue;
-    const amount = Math.abs(t.amount);
-    const category = (t.category || "").trim().toLowerCase();
-    const label = `${t.title || ""} ${t.merchant || ""} ${category}`.toLowerCase();
-
-    // 1. EMIs & Debt Repayment
-    if (
-      FLOW_EMI_CATEGORIES.has(category) ||
-      /\b(emi|loan repayment|loan emi|home loan|car loan|personal loan|credit card bill|cc bill|cred payment|hdfc card pay|icici card pay|sbi card pay|axis card pay|loan interest)\b/i.test(label)
-    ) {
-      totals.emis += amount;
-    }
-    // 2. Invested / SIPs / Savings
-    else if (
-      FLOW_SAVINGS_CATEGORIES.has(category) ||
-      /\b(sip|investment|mutual fund|zerodha|groww|kuvera|indmoney|etf|gold purchase|ppf|epf|nps|fixed deposit|recurring deposit|demat)\b/i.test(label)
-    ) {
-      totals.savings += amount;
-    }
-    // 3. Needs (Essentials: Housing, Groceries, Utilities, Bills, Health, Education, Commute, Insurance)
-    else if (
-      FLOW_NEEDS_CATEGORIES.has(category) ||
-      /\b(rent|house rent|society maintenance|grocery|groceries|supermarket|vegetables|milk|dairy|blinkit|zepto|instamart|bigbasket|dmart|electricity|water bill|gas bill|lpg cylinder|cylinder|broadband|wifi|internet|mobile recharge|phone bill|recharge|airtel|jio|medical|medicine|pharmacy|chemist|apollo|pharmeasy|1mg|doctor|hospital|clinic|insurance|lic premium|health insurance|car insurance|term life|school fee|tuition|college fee|fuel|petrol|diesel|cng|fastag|toll|metro card|bus pass|auto fare)\b/i.test(label)
-    ) {
-      totals.needs += amount;
-    }
-    // 4. Default / Lifestyle: Food & Dining, Shopping, Entertainment, Travel, Leisure
-    else {
-      totals.wants += amount;
-    }
+    totals[classifyFlow(t)] += Math.abs(t.amount);
   }
   return totals;
 }
@@ -455,7 +499,52 @@ export type TimelineEvent = {
   amount?: number;
   meta?: string;
   linkScreen?: string;
+  /** Money coming in (income, or a personal loan you lent out). Everything else with an amount is money going out. */
+  inflow?: boolean;
 };
+
+/** Kinds that are deadlines/reminders rather than scheduled debits — excluded from cash-flow totals. */
+export const NON_CASH_KINDS: ReadonlyArray<TimelineEvent["kind"]> = ["goal", "tax"];
+
+/** Local-calendar YYYY-MM-DD (toISOString() is UTC and shifts the day for IST users before 5:30am). */
+export function localISO(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+type Step = "weekly" | "monthly" | "quarterly" | "yearly";
+
+function parseLocal(iso: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/** `base` shifted by k steps; the original day-of-month is kept (31 Jan → 28 Feb → 31 Mar), clamped to month length. */
+function addSteps(base: Date, step: Step, k: number): Date {
+  if (step === "weekly") { const n = new Date(base); n.setDate(n.getDate() + 7 * k); return n; }
+  const months = (step === "yearly" ? 12 : step === "quarterly" ? 3 : 1) * k;
+  const first = new Date(base.getFullYear(), base.getMonth() + months, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  return new Date(first.getFullYear(), first.getMonth(), Math.min(base.getDate(), last));
+}
+
+/** A recurring item stored with its last due date must show its NEXT occurrence, not a stale past one. */
+function nextOccurrence(iso: string, step: Step): string {
+  const base = parseLocal(iso);
+  if (!base) return iso;
+  const today = parseLocal(localISO())!;
+  let k = 0;
+  let d = base;
+  while (d < today && k < 600) d = addSteps(base, step, ++k);
+  return localISO(d);
+}
+
+function stepFromPeriod(period?: string): Step {
+  const p = (period || "").toLowerCase();
+  if (/year|annual/.test(p)) return "yearly";
+  if (/quarter/.test(p)) return "quarterly";
+  if (/week/.test(p)) return "weekly";
+  return "monthly";
+}
 
 function getNextMonthlyOccurrence(dayOfMonth: number): string {
   const now = new Date();
@@ -471,6 +560,22 @@ function getNextMonthlyOccurrence(dayOfMonth: number): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Estimated bill for the statement that falls due on `dueISO`: card spend in the cycle that closes on the
+ * last statement date before that due date. Returns 0 when there is no tracked spend (never an invented figure).
+ */
+function estimateCardBill(cc: any, transactions: Tx[], dueISO: string): number {
+  const due = parseLocal(dueISO)!;
+  const stmtDay = Math.min(Math.max(1, Number(cc.statementDate) || ((due.getDate() + 10) % 28) + 1), 28);
+  let end = new Date(due.getFullYear(), due.getMonth(), stmtDay);
+  if (end >= due) end = new Date(due.getFullYear(), due.getMonth() - 1, stmtDay);
+  const start = new Date(end.getFullYear(), end.getMonth() - 1, stmtDay);
+  const a = localISO(start), b = localISO(end);
+  return transactions
+    .filter((t) => t.type === "expense" && t.creditCardId === cc.id && t.date > a && t.date <= b)
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 }
 
 export function buildTimeline({
@@ -510,6 +615,7 @@ export function buildTimeline({
       id: `tx-${t.id}`,
       date: t.date,
       kind: t.type === "income" ? "income" : "expense",
+      inflow: t.type === "income",
       title: t.merchant || t.title,
       amount: t.amount,
       meta: t.category,
@@ -520,10 +626,10 @@ export function buildTimeline({
   // 2. Subscriptions (check both renewal and nextRenewal)
   for (const s of (subscriptions || [])) {
     const renewDate = s.renewal || s.nextRenewal;
-    if (renewDate) {
+    if (renewDate && !/cancel|pause|inactive|ended/i.test(String(s.status || ""))) {
       events.push({
         id: `sub-${s.id}`,
-        date: renewDate,
+        date: nextOccurrence(renewDate, stepFromPeriod(s.period || s.billingCycle)),
         kind: "subscription",
         title: `${s.name} renews`,
         amount: Number(s.cost || s.amount) || 0,
@@ -565,13 +671,13 @@ export function buildTimeline({
   // 4. Structured Loans / EMIs (Home/Car/Personal)
   for (const sl of (structuredLoans || [])) {
     if (!sl.closed && sl.emiAmount) {
-      const emiDate = sl.nextEmiDueDate || getNextMonthlyOccurrence(10);
+      const emiDate = sl.nextEmiDueDate ? nextOccurrence(sl.nextEmiDueDate, "monthly") : getNextMonthlyOccurrence(10);
       events.push({
         id: `emi-${sl.id}`,
         date: emiDate,
         kind: "emi",
-        title: `${sl.lenderName} ${sl.loanType || "Loan"} EMI`,
-        amount: Number(sl.emiAmount) || 0,
+        title: `${sl.lenderName} ${sl.loanType || "Loan"} ${sl.phase === "pre_emi" ? "Pre-EMI" : "EMI"}`,
+        amount: (sl.phase === "pre_emi" ? Math.round(((Number(sl.disbursedAmount) || 0) * (Number(sl.interestRatePA) || 0)) / 1200) : Number(sl.emiAmount)) || 0,
         meta: `Monthly loan EMI`,
         linkScreen: "loans",
       });
@@ -582,13 +688,14 @@ export function buildTimeline({
   for (const cc of (creditCards || [])) {
     if (cc.cardType === "credit" && cc.dueDate) {
       const cardDueDate = getNextMonthlyOccurrence(Number(cc.dueDate));
+      const billed = estimateCardBill(cc, transactions || [], cardDueDate);
       events.push({
         id: `card-${cc.id}`,
         date: cardDueDate,
         kind: "card_bill",
         title: `${cc.bankName} ${cc.cardName} Bill Due`,
-        amount: cc.creditLimit ? Math.round(cc.creditLimit * 0.15) : undefined,
-        meta: `Card ending in ${cc.last4Digits || "•••"}`,
+        amount: billed > 0 ? billed : undefined,
+        meta: `Card ending in ${cc.last4Digits || "•••"}${billed > 0 ? " · est. from card spend" : ""}`,
         linkScreen: "cards",
       });
     }
@@ -610,10 +717,11 @@ export function buildTimeline({
 
   // 7. Insurance Policies
   for (const ins of (insurance || [])) {
-    if (ins.dueDate) {
+    const expired = ins.expiryDate && ins.expiryDate < localISO();
+    if (ins.dueDate && !expired) {
       events.push({
         id: `ins-${ins.id}`,
-        date: ins.dueDate,
+        date: nextOccurrence(ins.dueDate, "yearly"),
         kind: "insurance",
         title: `${ins.name} Premium`,
         amount: Number(ins.premiumAmount) || 0,
@@ -678,6 +786,7 @@ export function buildTimeline({
         kind: "loan",
         title: `${l.direction === "borrowed" ? "Repay" : "Collect from"} ${l.person}`,
         amount: l.amount,
+        inflow: l.direction !== "borrowed",
         meta: `Personal loan ${l.direction || ""}`,
         linkScreen: "loans",
       });
@@ -698,22 +807,25 @@ export function buildTimeline({
     }
   }
 
-  // 13. India Tax Calendar
-  for (const tx of [
-    { date: "2026-06-15", title: "Advance tax — Q1" },
-    { date: "2026-07-31", title: "ITR filing deadline" },
-    { date: "2026-09-15", title: "Advance tax — Q2" },
-    { date: "2026-12-15", title: "Advance tax — Q3" },
-    { date: "2027-03-15", title: "Advance tax — Q4" },
-  ]) {
-    events.push({
-      id: `tax-${tx.date}`,
-      date: tx.date,
-      kind: "tax",
-      title: tx.title,
-      meta: "Statutory tax deadline",
-      linkScreen: "tax",
-    });
+  // 13. India tax calendar — generated for this and next year so it never runs dry
+  const thisYear = new Date().getFullYear();
+  for (const y of [thisYear, thisYear + 1]) {
+    for (const tx of [
+      { date: `${y}-03-15`, title: "Advance tax — Q4" },
+      { date: `${y}-06-15`, title: "Advance tax — Q1" },
+      { date: `${y}-07-31`, title: "ITR filing deadline" },
+      { date: `${y}-09-15`, title: "Advance tax — Q2" },
+      { date: `${y}-12-15`, title: "Advance tax — Q3" },
+    ]) {
+      events.push({
+        id: `tax-${tx.date}`,
+        date: tx.date,
+        kind: "tax",
+        title: tx.title,
+        meta: "Statutory tax deadline",
+        linkScreen: "tax",
+      });
+    }
   }
 
   return events.sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -1090,7 +1202,7 @@ export function forecastCashFlow(
   for (const t of transactions) {
     const d = new Date(t.date);
     if (d < cutoff) continue;
-    const key = `${(t.merchant || t.title || "").trim().toLowerCase()}|${t.type}`;
+    const key = `${normKey(t.merchant || t.title)}|${t.type}`;
     if (!key.trim()) continue;
     (groups[key] ||= { amounts: [], days: [], type: t.type }).amounts.push(Math.abs(t.amount));
     groups[key].days.push(d.getDate());
@@ -1117,7 +1229,7 @@ export function forecastCashFlow(
     if (t.type !== "expense") continue;
     const d = new Date(t.date);
     if (d < lookback || d > today) continue;
-    const key = `${(t.merchant || t.title || "").trim().toLowerCase()}|expense`;
+    const key = `${normKey(t.merchant || t.title)}|expense`;
     if (recurringKeys.has(key)) continue;
     dowTotals[d.getDay()] += Math.abs(t.amount);
   }
@@ -1172,7 +1284,7 @@ export function upcomingBigBills(transactions: Tx[], warnDays = 21): UpcomingBig
   const groups: Record<string, { dates: Date[]; amounts: number[] }> = {};
   for (const t of transactions) {
     if (t.type !== "expense") continue;
-    const key = (t.merchant || t.title || "").trim().toLowerCase();
+    const key = normKey(t.merchant || t.title);
     if (!key) continue;
     (groups[key] ||= { dates: [], amounts: [] }).dates.push(new Date(t.date));
     groups[key].amounts.push(Math.abs(t.amount));

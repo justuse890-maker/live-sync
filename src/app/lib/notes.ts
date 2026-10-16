@@ -32,6 +32,10 @@ export type NoteReminder = {
   /** ISO datetime of the next occurrence */
   at: string;
   repeat: Repeat;
+  /** Bills: how many days before the due date to alert (0 = only on the day). Default 1. */
+  leadDays?: number;
+  /** Time of day for the alerts, "HH:MM" (24h). Default: 09:00 for the heads-up, the due time on the day. */
+  time?: string;
 };
 
 export type Note = {

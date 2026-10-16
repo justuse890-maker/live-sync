@@ -31,7 +31,7 @@ export async function initPushNotifications(onToken?: (token: string) => void) {
 
     // Token received → send to Supabase to save for this user
     PushNotifications.addListener('registration', (token) => {
-      console.log('FCM Token:', token.value);
+      // The token can push to this device: never log it.
       onToken?.(token.value);
     });
 
@@ -190,6 +190,20 @@ export async function initBackButton(onBack: () => void): Promise<(() => Promise
     return () => handle.remove();
   } catch (err) {
     console.warn('Back button init failed:', err);
+  }
+}
+
+/** Deliver deep links (cold start and while running) to `onUrl`. */
+export async function initDeepLinks(onUrl: (url: string) => void): Promise<(() => void) | undefined> {
+  if (!isNative()) return;
+  try {
+    const { App } = await import('@capacitor/app');
+    const launch = await App.getLaunchUrl();
+    if (launch?.url) onUrl(launch.url);
+    const handle = await App.addListener('appUrlOpen', (e) => onUrl(e.url));
+    return () => { handle.remove(); };
+  } catch (err) {
+    console.warn('Deep link init failed:', err);
   }
 }
 

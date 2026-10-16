@@ -6,6 +6,7 @@ import { useStore, Budget } from "../../store";
 import { getMonthKey, formatMonthName, shiftMonth } from "../../lib/dateUtils";
 import { useTranslation } from "../../lib/i18n";
 import { feedback } from "../../lib/feedback";
+import { rolloverCarry, budgetView, MonthFigures } from "../../lib/budgetRollover";
 
 export function Budgets({ onBack }: { onBack: () => void }) {
   const {
@@ -29,6 +30,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
   const [formLimit, setFormLimit] = useState("");
   const [formColor, setFormColor] = useState("#1E40AF");
   const [editLimitVal, setEditLimitVal] = useState("");
+  const [editRollover, setEditRollover] = useState(false);
 
   // Cycle Months
   const handlePrevMonth = () => {
@@ -51,6 +53,25 @@ export function Budgets({ onBack }: { onBack: () => void }) {
       .reduce((s, t) => s + Math.abs(t.amount), 0);
   };
 
+  // Money carried in from earlier months (only for budgets with rollover switched on).
+  const carryFor = (b: Budget): number => {
+    if (!b.rollover) return 0;
+    const cat = (b.category || "").trim().toLowerCase();
+    const history: MonthFigures[] = [];
+    for (let i = 6; i >= 1; i--) {
+      const m = shiftMonth(selectedMonth, -i);
+      const own = budgets.find((x) => (x.category || "").trim().toLowerCase() === cat && x.month === m)
+        ?? budgets.find((x) => (x.category || "").trim().toLowerCase() === cat && !x.month);
+      const spent = transactions
+        .filter((t) => (t.category || "").trim().toLowerCase() === cat && t.type === "expense" && getMonthKey(t.date) === m)
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      // A month with no expenses recorded at all was not tracked — don't treat it as a fully unspent budget.
+      const tracked = transactions.some((t) => t.type === "expense" && getMonthKey(t.date) === m);
+      history.push({ limit: own && tracked ? own.limit : null, spent });
+    }
+    return rolloverCarry(history);
+  };
+
   const prevMonth = shiftMonth(selectedMonth, -1);
   const prevBudgets = budgets.filter((b) => b.month === prevMonth);
   const copyPrevious = async () => {
@@ -58,7 +79,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
     setSubmitting(true);
     try {
       for (const b of prevBudgets) {
-        await addBudget({ category: b.category, limit: b.limit, spent: 0, color: b.color, month: selectedMonth });
+        await addBudget({ category: b.category, limit: b.limit, spent: 0, color: b.color, month: selectedMonth, rollover: b.rollover });
       }
       feedback({ kind: "success", title: `${prevBudgets.length} budgets copied`, subtitle: `From ${formatMonthName(prevMonth)}` });
     } finally {
@@ -67,7 +88,7 @@ export function Budgets({ onBack }: { onBack: () => void }) {
   };
 
   const totalSpent = monthlyBudgets.reduce((s, b) => s + getCategorySpent(b), 0);
-  const totalLimit = monthlyBudgets.reduce((s, b) => s + b.limit, 0);
+  const totalLimit = monthlyBudgets.reduce((s, b) => s + b.limit + carryFor(b), 0);
 
   const handleSaveBudget = async () => {
     if (submitting) return;
@@ -108,7 +129,8 @@ export function Budgets({ onBack }: { onBack: () => void }) {
       try {
         await updateBudget({
           ...editBudget,
-          limit: limitNum
+          limit: limitNum,
+          rollover: editRollover,
         });
         setEditBudget(null);
       } finally {
@@ -168,7 +190,8 @@ export function Budgets({ onBack }: { onBack: () => void }) {
           <div className="space-y-3">
             {monthlyBudgets.map((b) => {
               const spentAmt = getCategorySpent(b);
-              const p = b.limit > 0 ? (spentAmt / b.limit) * 100 : 0;
+              const v = budgetView(b.limit, spentAmt, carryFor(b));
+              const p = v.pct;
               const over = p >= 90;
               return (
                 <div key={b.id} className="bg-card rounded-2xl p-4 border border-border/60 shadow-sm relative group">
@@ -176,10 +199,10 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                     <span className="text-sm font-bold text-slate-800">{b.category}</span>
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-muted-foreground">
-                        <span className="text-foreground font-extrabold">{inr(spentAmt)}</span> / {inr(b.limit)}
+                        <span className="text-foreground font-extrabold">{inr(spentAmt)}</span> / {inr(v.effectiveLimit)}
                       </span>
                       <button 
-                        onClick={() => { setEditBudget(b); setEditLimitVal(String(b.limit)); }}
+                        onClick={() => { setEditBudget(b); setEditLimitVal(String(b.limit)); setEditRollover(!!b.rollover); }}
                         className="size-7 bg-muted hover:bg-muted/80 text-muted-foreground rounded-lg flex items-center justify-center transition"
                       >
                         <Edit3 className="size-3.5" />
@@ -195,6 +218,9 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                   <div className="h-2 bg-muted rounded-full overflow-hidden">
                     <div className="h-full rounded-full transition-all duration-300" style={{ width: `${Math.min(p, 100)}%`, background: over ? "#EF4444" : b.color || "#1E40AF" }} />
                   </div>
+                  {v.carry > 0 && (
+                    <div className="text-[11px] text-emerald-700 mt-1.5 font-semibold">+{inr(v.carry)} carried over from earlier months</div>
+                  )}
                   {over && (
                     <div className="text-[11px] text-rose-600 mt-1.5 font-bold">
                       ⚠ {p >= 100 ? t("budgets.limitExceeded") : t("budgets.limitSpending", { pct: p.toFixed(0) })}
@@ -313,6 +339,14 @@ export function Budgets({ onBack }: { onBack: () => void }) {
                   className="w-full rounded-xl border border-border px-3 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
                 />
               </div>
+
+              <label className="flex items-start gap-3 rounded-xl border border-border p-3 cursor-pointer">
+                <input type="checkbox" checked={editRollover} onChange={(e) => setEditRollover(e.target.checked)} className="mt-0.5 size-4" />
+                <span className="text-xs leading-snug">
+                  <span className="font-bold text-slate-800 block">Carry unspent money forward</span>
+                  <span className="text-muted-foreground">Whatever you don’t spend this month is added to next month’s limit (up to 6 months back). Overspending never reduces next month.</span>
+                </span>
+              </label>
 
               <button 
                 onClick={handleUpdateLimit}

@@ -3,6 +3,8 @@ import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { nativeStorage } from "./nativeStorage";
 import { encryptFields, decryptFields, clearFieldKeyCache } from "./fieldCrypto";
 import { isInvestorDemo } from "./demo";
+import { Capacitor } from "@capacitor/core";
+import { NATIVE_RESET_REDIRECT, parseAuthLink, AuthLink } from "./authLink";
 import { redactText } from "./aiPrivacy";
 import { saveAuthSession, clearAuthSession, saveCachedUserId, loadFromCache, saveToCache, clearCache } from "./localCache";
 import { localList, localUpsert, localRemove, localKey, claimDeviceFor, ALL_COLLECTIONS } from "./localDb";
@@ -22,22 +24,15 @@ const LIVESYNC_CACHE_KEYS = [
   "livesync-notified",           // sessionStorage loan notifications
 ];
 
-/** Wipe all local cache so no data bleeds between sign-in/sign-out sessions */
+/** Clear auth session and temporary cache on sign-out, never touching user financial data */
 export function clearLocalCache() {
   try {
     LIVESYNC_CACHE_KEYS.forEach((k) => {
       localStorage.removeItem(k);
       sessionStorage.removeItem(k);
     });
-    // Also clear any leftover livesync_ prefixed keys
-    Object.keys(localStorage)
-      .filter((k) => k.startsWith("livesync"))
-      .forEach((k) => localStorage.removeItem(k));
-    Object.keys(sessionStorage)
-      .filter((k) => k.startsWith("livesync"))
-      .forEach((k) => sessionStorage.removeItem(k));
     
-    // Clear native preferences storage key
+    // Clear native preferences auth storage key
     nativeStorage.removeItem(STORAGE_KEY);
 
     // Clear cached encryption key so next sign-in derives a fresh one
@@ -218,20 +213,38 @@ export const api = {
     _ensurePromise = null;
     return supabase().auth.signOut();
   },
-  resetPassword: (email: string) => supabase().auth.resetPasswordForEmail(email, { redirectTo: window.location.origin }),
+  // In the APK window.location.origin is https://localhost, which an e-mail client can't open.
+  // Native builds use the app's own deep link instead (must be in Supabase → Auth → Redirect URLs).
+  resetPassword: async (email: string) => {
+    const { error } = await supabase().auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: Capacitor.isNativePlatform() ? NATIVE_RESET_REDIRECT : window.location.origin,
+    });
+    if (error) throw error;
+  },
+  /** Consume a deep link opened from the reset e-mail. Returns what the UI should do next. */
+  handleAuthLink: async (url: string): Promise<AuthLink> => {
+    const link = parseAuthLink(url);
+    if (link?.kind === "recovery") {
+      const { error } = await supabase().auth.setSession({ access_token: link.accessToken, refresh_token: link.refreshToken });
+      if (error) return { kind: "error", message: "This reset link is no longer valid. Please request a new one." };
+    }
+    return link;
+  },
+  onPasswordRecovery: (cb: () => void) =>
+    supabase().auth.onAuthStateChange((event) => { if (event === "PASSWORD_RECOVERY") cb(); }),
   updatePassword: (password: string) => supabase().auth.updateUser({ password }),
   session: () => supabase().auth.getSession().then((r) => r.data.session),
   onAuth: (cb: (signedIn: boolean) => void) =>
     supabase().auth.onAuthStateChange((_, s) => cb(!!s)),
 
   // ── User data: ON-DEVICE ONLY ────────────────────────────────────────
-  // These three methods never touch the network. See localDb.ts.
+  // These three methods never touch the network for reads/writes. See localDb.ts.
   list: async <T>(col: string): Promise<T[]> => {
-    await ensureLocalData();
+    void ensureLocalData(); // Run sync/migration in background without blocking UI
     return localList<T>(col);
   },
   create: async <T>(col: string, item: Partial<T>): Promise<T> => {
-    await ensureLocalData();
+    void ensureLocalData();
     // Items queued by older builds may still carry encrypted fields — decrypt
     // once so on-device data is always plain, readable by this device only.
     const userId = await getCurrentUserId();
@@ -319,91 +332,25 @@ export const api = {
         const cached = localStorage.getItem("livesync_subscription_cache");
         if (cached) return JSON.parse(cached);
       } catch {}
-      // Fallback default state
+      // Fail closed: if the server cannot confirm a plan and nothing is cached, treat the
+      // user as Free. (Granting Pro here would let anyone unlock it by blocking the request.)
       return {
-        subscription: { planId: "pro", since: new Date().toISOString() },
-        plan: { id: "pro", name: "Pro", priceMonthly: 99 },
+        subscription: { planId: "free", since: new Date().toISOString() },
+        plan: { id: "free", name: "Free", priceMonthly: 0 },
         entitlements: {},
         allFeatures: [],
-        inTrial: true,
+        inTrial: false,
       };
     }
   },
-  upgradeSubscription: async (planId: "free" | "pro" | "lifetime") => {
-    const cachedSub = {
-      subscription: {
-        planId,
-        since: new Date().toISOString(),
-        lifetime: planId === "lifetime",
-        renewsAt: planId === "pro" ? new Date(Date.now() + 30 * 86400000).toISOString() : null,
-      },
-      plan: planId === "free" ? { id: "free", name: "Free", priceMonthly: 0 } : planId === "pro" ? { id: "pro", name: "Pro", priceMonthly: 99 } : { id: "lifetime", name: "Pro Lifetime", priceMonthly: 0, priceOneTime: 4999 },
-      entitlements: {},
-      allFeatures: [],
-      inTrial: planId !== "free",
-    };
-    try { localStorage.setItem("livesync_subscription_cache", JSON.stringify(cachedSub)); } catch {}
-
-    try {
-      return await req("/me/subscription/upgrade", { method: "POST", body: JSON.stringify({ planId }) });
-    } catch {
-      return { ok: true, subscription: cachedSub.subscription };
-    }
-  },
+  // The server is the only authority on the plan. No optimistic local grant and no
+  // swallowed failure: a rejected or unreachable upgrade must surface as an error.
+  upgradeSubscription: (planId: "free" | "pro" | "lifetime") =>
+    req("/me/subscription/upgrade", { method: "POST", body: JSON.stringify({ planId }) }),
   renewSubscription: () => req("/me/subscription/renew", { method: "POST" }),
   cancelSubscription: () => req("/me/subscription/cancel", { method: "POST" }),
   submitFeedback: (payload: { kind?: string; severity?: string; screen?: string; message: string }) =>
     req("/feedback", { method: "POST", body: JSON.stringify(payload) }).then((r) => r.item),
   listFeedback: () => req("/feedback").then((r) => r.items as Array<{ id: string; createdAt: string; kind: string; severity: string; screen?: string; message: string; status: string }>),
-  coach: async (message: string, history: Array<{ role: "user" | "assistant"; text: string }>, context: any) => {
-    try {
-      const result = await req("/ai/coach", { method: "POST", body: JSON.stringify({ message, history, context }) });
-      return result.text as string;
-    } catch (err: any) {
-      // Surface rate limit errors distinctly
-      if (err.message?.includes("429")) {
-        throw new Error("RATE_LIMIT: Daily AI Coach limit reached (3/3). Resets at midnight.");
-      }
-      throw err;
-    }
-  },
-
-  // ── [P0] Weekly AI Briefing ──────────────────────────────────────────
-  weeklyBriefing: async (snapshot: Record<string, unknown>, force = false): Promise<{ text: string; cached: boolean; generatedAt?: string }> => {
-    return req("/ai/weekly-briefing", { method: "POST", body: JSON.stringify({ snapshot, force }) });
-  },
-
-  // ── [P1] AI-Drafted Negotiation / Cancellation Script ────────────────
-  negotiationScript: async (
-    kind: "credit_card_rate" | "insurance_premium" | "loan_rate" | "subscription_cancel",
-    context: {
-      name: string;
-      currentAmount: number;
-      currentRatePct?: number;
-      marketBenchmarkPct?: number;
-      tenureMonths?: number;
-      hasGoodPaymentHistory?: boolean;
-    }
-  ): Promise<{ text: string; aiUsed: boolean }> => {
-    try {
-      // Minimised: product name scrubbed of numbers/IDs, amount rounded to ₹100.
-      const safe = { ...context, name: redactText(context.name).slice(0, 40), currentAmount: Math.round(context.currentAmount / 100) * 100 };
-      return await req("/ai/negotiation-script", { method: "POST", body: JSON.stringify({ kind, context: safe }) });
-    } catch (err: any) {
-      if (err.message?.includes("429")) {
-        throw new Error("RATE_LIMIT: Daily AI limit reached (3/3). Resets at midnight.");
-      }
-      throw err;
-    }
-  },
-
-  // ── AI feature status (used by Settings/diagnostics + the verify script) ──
-  aiStatus: async (): Promise<{
-    geminiConfigured: boolean;
-    features: Record<string, { server: string; status: string; lastGeneratedAt?: string | null }>;
-  }> => {
-    return req("/ai/status");
-  },
-
   getCurrentUserId,
 };

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { notify } from "../../lib/notify";
 import {
   ArrowLeft,
   Check,
@@ -54,7 +55,7 @@ const PLAN_FEATURES = {
     "All future Pro feature updates unlocked at no cost",
     "Priority support directly from engineering team",
     "Unlimited document vault storage allocation",
-    "Early access to automated RBI Account Aggregator sync",
+    "Every future CA-style report and planning tool, included",
   ],
 };
 
@@ -64,6 +65,10 @@ export function Pricing({ onBack }: { onBack: () => void }) {
   const [selectedTier, setSelectedTier] = useState<"free" | "pro" | "lifetime">("pro");
   const [busy, setBusy] = useState<null | "upgrade" | "renew" | "cancel">(null);
   const [sheet, setSheet] = useState<null | "upgrade" | "cancel" | "renew" | "upgraded">(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // API errors look like "API POST /path failed: 402 <server message>"; show only the server message.
+  const describeError = (e: any, fallback: string) =>
+    String(e?.message || "").replace(/^API [A-Z]+ \S+ failed: \d+ /, "") || fallback;
 
   const planId = subscription?.planId || "free";
   const isLifetime = !!subscription?.lifetime || planId === "lifetime";
@@ -82,10 +87,14 @@ export function Pricing({ onBack }: { onBack: () => void }) {
     setBusy("upgrade");
     setSheet(null);
     try {
+      setActionError(null);
       await upgrade(selectedTier);
       setSheet("upgraded");
+      notify.success("Plan updated");
     } catch (e: any) {
       console.error("Upgrade failed:", e);
+      setActionError(describeError(e, "Upgrade failed. Please try again."));
+      notify.error("Upgrade unavailable", describeError(e, "Please try again."));
     } finally {
       setBusy(null);
     }
@@ -94,9 +103,11 @@ export function Pricing({ onBack }: { onBack: () => void }) {
   const handleDowngrade = async () => {
     setBusy("upgrade");
     try {
+      setActionError(null);
       await upgrade("free");
     } catch (e: any) {
       console.error("Downgrade failed:", e);
+      setActionError(describeError(e, "Could not change your plan. Please try again."));
     } finally {
       setBusy(null);
     }
@@ -106,10 +117,12 @@ export function Pricing({ onBack }: { onBack: () => void }) {
     setBusy("renew");
     setSheet(null);
     try {
+      setActionError(null);
       await api.renewSubscription();
       await refresh();
     } catch (e: any) {
       console.error("Renewal failed:", e);
+      setActionError(describeError(e, "Renewal failed. Please try again."));
     } finally {
       setBusy(null);
     }
@@ -133,6 +146,11 @@ export function Pricing({ onBack }: { onBack: () => void }) {
       <Header title="Subscription Plans" subtitle="Pro vs Free vs Lifetime" showBack onBack={onBack} />
       <Screen>
         <div className="px-5 pt-4 space-y-6 pb-24">
+          {actionError && (
+            <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+              {actionError}
+            </div>
+          )}
           
           {/* Hero Header */}
           <div className="text-center space-y-2 pt-1">

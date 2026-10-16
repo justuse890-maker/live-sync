@@ -1,6 +1,9 @@
 import { useState, useMemo } from "react";
+import { SavingsAdvisor } from "../SavingsAdvisor";
+import { SavingsPlan, VEHICLES } from "../../lib/savingsAdvisor";
 import {
   Shield,
+  ArrowRight,
   Plane,
   Bike,
   Home,
@@ -28,6 +31,9 @@ import { getMonthKey, getCurrentMonthKey, getGoalDeadlineMetrics, getQuickDatePr
 
 const iconMap: Record<string, any> = { Shield, Plane, Bike, Home, PiggyBank, Car, GraduationCap, Laptop };
 
+import { SalarySplitSheet } from "../SalarySplit";
+import { BUCKET_KINDS, BucketKind } from "../../lib/salarySplit";
+
 export function BucketsList({ onBack }: { onBack?: () => void }) {
   const { buckets, addBucket, removeBucket, archiveBucket, bucketContributions, addBucketContribution } = useStore();
   const navigate = useNavigate();
@@ -44,6 +50,10 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
   const [formIcon, setFormIcon] = useState("PiggyBank");
   const [formColor, setFormColor] = useState("#1E40AF");
   const [formMonthlyTarget, setFormMonthlyTarget] = useState("");
+  const [formKind, setFormKind] = useState<BucketKind>("goal");
+  const [formAlloc, setFormAlloc] = useState("");
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [formPlan, setFormPlan] = useState<SavingsPlan | undefined>(undefined);
 
   const activeBuckets = useMemo(() => buckets.filter((b) => b.status === "active"), [buckets]);
 
@@ -133,6 +143,9 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
         targetDate: formDeadline.trim() || undefined,
         iconOrColor: `${formIcon}:${formColor}`,
         monthlySaveTarget: formMonthlyTarget ? Number(formMonthlyTarget) : undefined,
+        kind: formKind,
+        allocPct: formAlloc && Number(formAlloc) > 0 ? Math.min(100, Number(formAlloc)) : undefined,
+        savingsPlan: formPlan,
       });
 
       setAddOpen(false);
@@ -141,6 +154,9 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
       setFormDeadline("");
       setFormNotes("");
       setFormMonthlyTarget("");
+      setFormKind("goal");
+      setFormAlloc("");
+      setFormPlan(undefined);
     } catch (e) {
       console.error("Save bucket error:", e);
     } finally {
@@ -210,6 +226,14 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
             </div>
           )}
 
+          {/* Salary day: divide income across buckets */}
+          {activeBuckets.length > 0 && (
+            <button onClick={() => setSplitOpen(true)} className="w-full rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 py-3 px-4 flex items-center justify-between active:scale-[0.99]">
+              <span className="text-left"><span className="block text-sm font-bold">Split this month’s salary</span><span className="block text-[11px] text-emerald-800/80">Every rupee gets a home, by the % you set per bucket</span></span>
+              <ArrowRight className="size-4" />
+            </button>
+          )}
+
           {/* Trigger Create Bucket */}
           <button
             onClick={() => setAddOpen(true)}
@@ -255,6 +279,9 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-bold text-slate-800 truncate">{b.name}</div>
                         <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-0.5">
+                          {b.savingsPlan && VEHICLES[b.savingsPlan.vehicleId] ? (
+                            <span className="text-primary font-semibold">Saving in {VEHICLES[b.savingsPlan.vehicleId].name} · </span>
+                          ) : null}
                           {b.monthlySaveTarget ? (
                             <span>₹{b.monthlySaveTarget.toLocaleString("en-IN")}/mo target · </span>
                           ) : null}
@@ -465,6 +492,15 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
                 )}
               </div>
 
+              <SavingsAdvisor
+                name={formName}
+                targetAmount={Number(formTarget) || 0}
+                targetDate={formDeadline || undefined}
+                plan={formPlan}
+                onPlan={setFormPlan}
+                onUseMonthly={(n) => setFormMonthlyTarget(String(n))}
+              />
+
               <div>
                 <label className="text-xs text-muted-foreground font-bold block mb-1">Monthly Save Target (₹) — for on-track alerts</label>
                 <input
@@ -476,6 +512,29 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
                   className="w-full rounded-xl border border-border px-3.5 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
                 />
                 <div className="text-[10px] text-muted-foreground mt-1">Smart notifications will alert you if you fall behind this target.</div>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">What is this bucket for?</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {BUCKET_KINDS.map((k) => (
+                    <button key={k.id} type="button" onClick={() => setFormKind(k.id)} title={k.hint} className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${formKind === k.id ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{k.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">Share of each salary (%) — optional</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={100}
+                  value={formAlloc}
+                  onChange={(e) => setFormAlloc(e.target.value)}
+                  placeholder="e.g. 20 — 20% of every salary goes here"
+                  className="w-full rounded-xl border border-border px-3.5 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
+                />
               </div>
 
               <div>
@@ -540,6 +599,7 @@ export function BucketsList({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
       )}
+      <SalarySplitSheet open={splitOpen} onClose={() => setSplitOpen(false)} />
     </>
   );
 }

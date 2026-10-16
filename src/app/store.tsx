@@ -1,13 +1,20 @@
-import { createContext, ReactNode, useContext, useEffect, useState, useCallback, useRef } from "react";
+import { normKey } from "./lib/safeText";
+import { createContext, ReactNode, useContext, useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { clearAiConfig } from "./lib/aiClient";
+import type { BucketKind } from "./lib/salarySplit";
+import type { TaxTag } from "./lib/taxTags";
+import { countable, buildTransferLegs, applyTransferPair, clearTransfer, suggestTransferPairs, TransferSuggestion } from "./lib/transfers";
 import { api, OfflineError } from "./lib/api";
-import { Asset, Liability, LifeEvent } from "./lib/intelligence";
-import { saveToCache, loadFromCache, clearCache, loadCachedUserId } from "./lib/localCache";
+import { saveToCache, loadFromCache, clearCache, loadCachedUserId, loadAuthSession } from "./lib/localCache";
+import { autoRecoverIfEmpty, savePermanentBackupSnapshot } from "./lib/recovery";
 import { getCurrentMonthKey } from "./lib/dateUtils";
 import { sanitizeBucket } from "./lib/fieldCrypto";
 import { enqueueOp, loadQueue, dequeueOp, clearQueue } from "./lib/offlineQueue";
 import { encryptFields } from "./lib/fieldCrypto";
 import { Note, markBillPaid, rollForwardIfDue, isBill } from "./lib/notes";
 import { feedback } from "./lib/feedback";
+import { notify } from "./lib/notify";
+import { alreadyRecorded, applyInstallment, buildInstallmentTx, dueInstallments } from "./lib/loanEngine";
 import { localReplace, eraseAllUserData } from "./lib/localDb";
 import { todayISO } from "./lib/dateUtils";
 
@@ -58,9 +65,20 @@ export type Tx = {
   creditCardId?: string; // ID of the credit card used (when payment mode is 'credit')
   accountId?: string; // ID of the linked bank account (from ConnectedAccounts)
   loanId?: string; // ID of the linked StructuredLoan (e.g. for EMI or loan payments)
-  loanPaymentType?: "emi" | "prepayment";
+  loanPaymentType?: "emi" | "pre_emi" | "prepayment";
+  /** Recorded automatically on the due date by an auto-debit mandate (not typed in by the user). */
+  autoDebited?: boolean;
   notes?: string;
   createdAt?: string;
+  /** Own-account transfer leg — excluded from income/expense everywhere (see lib/transfers.ts). */
+  isTransfer?: boolean;
+  transferId?: string;
+  transferRole?: "out" | "in";
+  categoryBeforeTransfer?: string;
+  /** User's own tax label for year-end totals (see lib/taxTags.ts). */
+  taxTag?: TaxTag;
+  /** Business or personal money (business persona only). Absent = personal. */
+  scope?: "personal" | "business";
 };
 
 export const TX_EDIT_WINDOW_MS = 5 * 60 * 1000;
@@ -89,6 +107,7 @@ export type StructuredLoanType =
   | "education_loan"
   | "property_registration"
   | "builder_demand"
+  | "bnpl" // Pay-later / buy-now-pay-later: a debt with a due date, never a plain expense
   | "other";
 
 export type BuilderMilestone = {
@@ -125,6 +144,18 @@ export type StructuredLoan = {
   builderMilestones?: BuilderMilestone[];
   emiHistory?: EmiRevision[];
   autoDebitBankAccountId?: string;
+  /** Record each instalment automatically on its due date (mirrors the bank's e-mandate). */
+  autoDebit?: boolean;
+  /** "pre_emi": interest-only on the amount disbursed so far. Absent/"emi": regular EMI. */
+  phase?: "pre_emi" | "emi";
+  /** Amount the bank has released so far (basis of Pre-EMI interest). */
+  disbursedAmount?: number;
+  /** Date from which the full EMI is expected to start (possession / full disbursement). */
+  fullEmiStartDate?: string;
+  /** Total Pre-EMI interest paid so far (tax-relevant, not part of principal repayment). */
+  preEmiPaidTotal?: number;
+  /** Preferred day of month for the instalment (keeps the 31st from drifting after short months). */
+  emiDay?: number;
   notes?: string;
   closed?: boolean;
   createdAt?: string;
@@ -143,6 +174,14 @@ export type CreditCard = {
   creditLimit?: number; // Total limit for Credit/Corporate, or daily limit for Debit/Forex
   statementDate?: number; // Day of month (1-31)
   dueDate?: number; // Preferred payment reminder day of month (1-31)
+  /** Total due on the latest statement, as printed on it. Only used while statementDueFor matches the upcoming due month. */
+  statementDue?: number;
+  /** Minimum amount due on the latest statement. */
+  minDue?: number;
+  /** "YYYY-MM" of the due date the two amounts above belong to, so an old statement is never quoted for a new month. */
+  statementDueFor?: string;
+  /** "YYYY-MM" of the due date the user marked as paid: its reminders and "still to pay" entry are hidden. */
+  statementPaidFor?: string;
   expiryMonth?: string; // MM e.g. "08"
   expiryYear?: string; // YY e.g. "29"
   annualFee?: number;
@@ -249,8 +288,14 @@ export type Bucket = {
   targetAmount: number;
   savedAmount: number;
   monthlySaveTarget?: number; // P3: how much to save per month
+  /** Where the goal's money is kept (chosen in the "Where should you save this?" advisor). */
+  savingsPlan?: { vehicleId: string; provider: string; accountId?: string; ratePA: number; ratesAsOf: string };
   targetDate?: string;
   iconOrColor: string;
+  /** What this bucket is for (Need / Want / Goal / Gold / Chit) — shapes how it is presented and split. */
+  kind?: BucketKind;
+  /** Share (%) of each salary that should land in this bucket. */
+  allocPct?: number;
   status: "active" | "completed" | "archived";
   createdAt?: string;
   updatedAt?: string;
@@ -275,6 +320,8 @@ export type Budget = {
   spent: number;
   color: string;
   month?: string;
+  /** Unspent money carries into next month (see lib/budgetRollover.ts). */
+  rollover?: boolean;
 };
 
 export type Subscription = {
@@ -357,7 +404,7 @@ export const insuranceKey = (ins: InsurancePolicy) => `${(ins.name || "").trim()
 export const loanKey = (l: Loan) => `${(l.person || "").trim().toLowerCase()}|${l.amount}|${l.repayBy}|${l.direction}`;
 export const structuredLoanKey = (sl: StructuredLoan) => `${(sl.lenderName || "").trim().toLowerCase()}|${sl.loanType}|${sl.principalAmount}|${sl.disbursementDate}`;
 export const creditCardKey = (cc: CreditCard) => `${(cc.bankName || "").trim().toLowerCase()}|${(cc.cardName || "").trim().toLowerCase()}|${cc.last4Digits}|${cc.cardType || "credit"}`;
-export const txKey = (t: Tx) => `${t.date}|${t.amount}|${(t.title || "").trim().toLowerCase()}|${t.category}|${t.type}`;
+export const txKey = (t: Tx) => `${t.date}|${t.amount}|${normKey(t.title)}|${t.category}|${t.type}|${t.transferId || ""}`;
 export const goalKey = (g: Goal) => `${(g.name || "").trim().toLowerCase()}|${g.target}|${g.deadline}`;
 export const bucketKey = (bk: Bucket) => `${(bk.name || "").trim().toLowerCase()}|${bk.targetAmount}`;
 export const bucketContribKey = (bc: BucketContribution) => `${bc.bucketId}|${bc.amount}|${bc.date}`;
@@ -366,12 +413,15 @@ export const subscriptionKey = (s: Subscription) => `${(s.name || "").trim().toL
 export const assetKey = (a: Asset) => `${(a.name || "").trim().toLowerCase()}|${a.kind || ""}|${a.value}`;
 export const liabilityKey = (l: Liability) => `${(l.name || "").trim().toLowerCase()}|${l.kind || ""}|${l.outstanding}`;
 export const householdStaffKey = (s: HouseholdStaff) => `${(s.name || "").trim().toLowerCase()}|${s.role}`;
-export const societyNoticeKey = (n: SocietyNotice) => `${(n.title || "").trim().toLowerCase()}|${n.date}|${n.type}`;
-export const householdReminderKey = (r: HouseholdReminder) => `${(r.title || "").trim().toLowerCase()}|${r.dueDate}`;
+export const societyNoticeKey = (n: SocietyNotice) => `${normKey(n.title)}|${n.date}|${n.type}`;
+export const householdReminderKey = (r: HouseholdReminder) => `${normKey(r.title)}|${r.dueDate}`;
 
 type StoreCtx = {
   ready: boolean;
+  /** Ledger used by every income / expense / budget / report calculation — own-account transfers excluded. */
   transactions: Tx[];
+  /** Full ledger including transfer legs (activity list, account balances). */
+  allTransactions: Tx[];
   buckets: Bucket[];
   bucketContributions: BucketContribution[];
   goals: Goal[];
@@ -410,7 +460,15 @@ type StoreCtx = {
   removeLiability: (id: string) => Promise<void>;
   upsertLifeEvent: (e: LifeEvent | Omit<LifeEvent, "id">) => Promise<void>;
   removeLifeEvent: (id: string) => Promise<void>;
-  addTransaction: (t: Omit<Tx, "id">) => Promise<void>;
+  addTransaction: (t: Omit<Tx, "id">, opts?: { silent?: boolean }) => Promise<void>;
+  /** Record money moved between the user's own accounts (two legs, never counted as income/expense). */
+  addTransfer: (input: { amount: number; date: string; fromAccountId?: string; toAccountId?: string; fromLabel?: string; toLabel?: string }) => Promise<void>;
+  /** Turn two existing rows into one transfer. */
+  linkTransfer: (outId: string, inId: string) => Promise<void>;
+  /** Turn a transfer back into ordinary income/expense rows. */
+  unlinkTransfer: (transferId: string) => Promise<void>;
+  /** Possible own-account transfers in the ledger, for the user to confirm. */
+  transferSuggestions: TransferSuggestion[];
   updateTransaction: (t: Tx) => Promise<{ ok: boolean; error?: string }>;
   deleteTransaction: (id: string) => Promise<{ ok: boolean; error?: string }>;
   addLoan: (l: Omit<Loan, "id">) => Promise<void>;
@@ -467,7 +525,8 @@ const Ctx = createContext<StoreCtx | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [transactions, setTransactions] = useState<Tx[]>([]);
+  const [allTransactions, setTransactions] = useState<Tx[]>([]);
+  const transactions = useMemo(() => countable(allTransactions), [allTransactions]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [bucketContributions, setBucketContributions] = useState<BucketContribution[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -492,12 +551,45 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [societyNotices, setSocietyNotices] = useState<SocietyNotice[]>([]);
   const [householdReminders, setHouseholdReminders] = useState<HouseholdReminder[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
-  const [notificationSound, setNotificationSoundState] = useState<string>("default");
+  const [notificationSound, setNotificationSoundState] = useState<string>("chime"); // our own original chime; "default" means the phone's system sound
 
   const refresh = useCallback(async () => {
-    // ── Phase 1: Load from local cache (instant, offline-first) ──
+    // ── Phase 0: Universal auto-recovery check ──
     try {
-      const [
+      await autoRecoverIfEmpty();
+    } catch (e) {
+      console.warn("Auto-recovery pre-check error (non-fatal):", e);
+    }
+
+    // ── Phase 1: Load from local cache (instant, offline-first) ──
+    let cachedTx: Tx[] | null = null;
+    let cachedLoans: Loan[] | null = null;
+    let cachedCats: { id: string; name: string }[] | null = null;
+    let cachedAssets: Asset[] | null = null;
+    let cachedLiab: Liability[] | null = null;
+    let cachedEvents: LifeEvent[] | null = null;
+    let cachedSips: Sip[] | null = null;
+    let cachedIns: InsurancePolicy[] | null = null;
+    let cachedInv: Investment[] | null = null;
+    let cachedGold: GoldHolding[] | null = null;
+    let cachedProp: Property[] | null = null;
+    let cachedCs: CreditScoreLog[] | null = null;
+    let cachedFraud: FraudAlert[] | null = null;
+    let cachedGoals: Goal[] | null = null;
+    let cachedBudgets: Budget[] | null = null;
+    let cachedSubs: Subscription[] | null = null;
+    let cachedBuckets: Bucket[] | null = null;
+    let cachedBucketContribs: BucketContribution[] | null = null;
+    let cachedStructuredLoans: StructuredLoan[] | null = null;
+    let cachedCreditCards: CreditCard[] | null = null;
+    let cachedHouseholdStaff: HouseholdStaff[] | null = null;
+    let cachedSocietyNotices: SocietyNotice[] | null = null;
+    let cachedHouseholdReminders: HouseholdReminder[] | null = null;
+    let cachedSound: string | null = null;
+    let cachedNotes: Note[] | null = null;
+
+    try {
+      [
         cachedTx, cachedLoans, cachedCats, cachedAssets, cachedLiab, cachedEvents,
         cachedSips, cachedIns, cachedInv, cachedGold, cachedProp, cachedCs, cachedFraud,
         cachedGoals, cachedBudgets, cachedSubs, cachedBuckets, cachedBucketContribs,
@@ -528,7 +620,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         loadFromCache<HouseholdStaff>("householdStaff"),
         loadFromCache<SocietyNotice>("societyNotices"),
         loadFromCache<HouseholdReminder>("householdReminders"),
-        loadFromCache<string>("notificationSound").then(r => r?.[0]),
+        loadFromCache<string>("notificationSound").then(r => r?.[0] ?? null),
         loadFromCache<Note>("notes"),
       ]);
 
@@ -559,7 +651,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (cachedHouseholdStaff) setHouseholdStaff(dedupeList(cachedHouseholdStaff, householdStaffKey));
       if (cachedSocietyNotices) setSocietyNotices(dedupeList(cachedSocietyNotices, societyNoticeKey));
       if (cachedHouseholdReminders) setHouseholdReminders(dedupeList(cachedHouseholdReminders, householdReminderKey));
-      if (cachedSound) setNotificationSoundState(cachedSound);
+      if (cachedSound) {
+        // One-time move for people who never picked a sound: from the phone's stock tone to our own chime.
+        let migrated = false;
+        try { migrated = localStorage.getItem("ls_sound_v2") === "1"; localStorage.setItem("ls_sound_v2", "1"); } catch { /* storage unavailable */ }
+        setNotificationSoundState(cachedSound === "default" && !migrated ? "chime" : cachedSound);
+      }
       if (cachedNotes) {
         // Keep-style: repeating (non-bill) reminders that already fired roll to their next time.
         const rolled = cachedNotes.map((n) => rollForwardIfDue(n) ?? n);
@@ -609,27 +706,40 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         api.list<SocietyNotice>("societyNotices"),
         api.list<HouseholdReminder>("reminders"),
       ]);
-      const cleanAssets = dedupeList(assetsRemote, assetKey);
-      const cleanLiab = dedupeList(liabRemote, liabilityKey);
-      const cleanEvents = dedupeList(eventsRemote);
-      const cleanSips = dedupeList(sipsRemote, sipKey);
-      const cleanIns = dedupeList(insRemote, insuranceKey);
-      const cleanInv = dedupeList(invRemote, investmentKey);
-      const cleanGold = dedupeList(goldRemote, goldKey);
-      const cleanProp = dedupeList(propRemote, propertyKey);
-      const cleanCs = dedupeList(csRemote).sort((a, b) => b.date.localeCompare(a.date));
-      const cleanFraud = dedupeList(fraudRemote);
-      const cleanTx = dedupeList(txRemote, txKey).sort((a, b) => (a.date < b.date ? 1 : -1));
-      const cleanLoans = dedupeList(loansRemote, loanKey);
-      const cleanStructuredLoans = dedupeList(structuredLoansRemote, structuredLoanKey);
-      const cleanCreditCards = dedupeList(creditCardsRemote, creditCardKey);
-      const cleanGoals = dedupeList(goalsRemote, goalKey);
+
+      // Safe merge helper: NEVER let an empty remote list delete populated local data
+      const mergeSafe = <T,>(remote: T[], cached: T[] | null | undefined, keyFn: (item: T) => string): T[] => {
+        const hasRemote = Array.isArray(remote) && remote.length > 0;
+        const hasCached = Array.isArray(cached) && cached.length > 0;
+        if (hasRemote && hasCached) {
+          return dedupeList([...cached, ...remote], keyFn);
+        }
+        if (hasRemote) return dedupeList(remote, keyFn);
+        if (hasCached) return dedupeList(cached, keyFn);
+        return [];
+      };
+
+      const cleanAssets = mergeSafe(assetsRemote, cachedAssets, assetKey);
+      const cleanLiab = mergeSafe(liabRemote, cachedLiab, liabilityKey);
+      const cleanEvents = mergeSafe(eventsRemote, cachedEvents, (x) => (x as any).id || JSON.stringify(x));
+      const cleanSips = mergeSafe(sipsRemote, cachedSips, sipKey);
+      const cleanIns = mergeSafe(insRemote, cachedIns, insuranceKey);
+      const cleanInv = mergeSafe(invRemote, cachedInv, investmentKey);
+      const cleanGold = mergeSafe(goldRemote, cachedGold, goldKey);
+      const cleanProp = mergeSafe(propRemote, cachedProp, propertyKey);
+      const cleanCs = mergeSafe(csRemote, cachedCs, (x) => x.id || x.date).sort((a, b) => b.date.localeCompare(a.date));
+      const cleanFraud = mergeSafe(fraudRemote, cachedFraud, (x) => (x as any).id || JSON.stringify(x));
+      const cleanTx = mergeSafe(txRemote, cachedTx, txKey).sort((a, b) => (a.date < b.date ? 1 : -1));
+      const cleanLoans = mergeSafe(loansRemote, cachedLoans, loanKey);
+      const cleanStructuredLoans = mergeSafe(structuredLoansRemote, cachedStructuredLoans, structuredLoanKey);
+      const cleanCreditCards = mergeSafe(creditCardsRemote, cachedCreditCards, creditCardKey);
+      const cleanGoals = mergeSafe(goalsRemote, cachedGoals, goalKey);
       const userId = await api.getCurrentUserId();
       const sanitizedBuckets = await Promise.all(bucketsRemote.map((b) => sanitizeBucket(b, userId)));
-      const cleanBuckets = dedupeList(sanitizedBuckets, bucketKey);
-      const cleanBucketContribs = dedupeList(bucketContribsRemote, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1));
-      const cleanBudgets = dedupeList(budgetsRemote, budgetKey);
-      const cleanSubs = dedupeList(subsRemote, subscriptionKey);
+      const cleanBuckets = mergeSafe(sanitizedBuckets, cachedBuckets, bucketKey);
+      const cleanBucketContribs = mergeSafe(bucketContribsRemote, cachedBucketContribs, bucketContribKey).sort((a, b) => (a.date < b.date ? 1 : -1));
+      const cleanBudgets = mergeSafe(budgetsRemote, cachedBudgets, budgetKey);
+      const cleanSubs = mergeSafe(subsRemote, cachedSubs, subscriptionKey);
 
       setAssets(cleanAssets);
       setLiabilities(cleanLiab);
@@ -651,45 +761,49 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setBudgets(cleanBudgets);
       setSubscriptions(cleanSubs);
 
-      const cleanHouseholdStaff = dedupeList(householdStaffRemote, householdStaffKey);
-      const cleanSocietyNotices = dedupeList(societyNoticesRemote, societyNoticeKey);
-      const cleanHouseholdReminders = dedupeList(householdRemindersRemote, householdReminderKey);
+      const cleanHouseholdStaff = mergeSafe(householdStaffRemote, cachedHouseholdStaff, householdStaffKey);
+      const cleanSocietyNotices = mergeSafe(societyNoticesRemote, cachedSocietyNotices, societyNoticeKey);
+      const cleanHouseholdReminders = mergeSafe(householdRemindersRemote, cachedHouseholdReminders, householdReminderKey);
       setHouseholdStaff(cleanHouseholdStaff);
       setSocietyNotices(cleanSocietyNotices);
       setHouseholdReminders(cleanHouseholdReminders);
 
-      if (catsRemote.length === 0) {
+      if (catsRemote.length === 0 && (!cachedCats || cachedCats.length === 0)) {
         setCategories(DEFAULT_CATEGORIES);
       } else {
-        const custom = catsRemote.map((c) => c.name).filter(Boolean);
+        const mergedCats = mergeSafe(catsRemote, cachedCats, (c) => c.name || (c as any).id);
+        const custom = mergedCats.map((c) => c.name).filter(Boolean);
         const merged = Array.from(new Set([...DEFAULT_CATEGORIES, ...custom]));
         setCategories(merged);
       }
 
-      // ── Persist cleaned data to local cache ──
-      saveToCache("transactions", cleanTx);
-      saveToCache("loans", cleanLoans);
-      saveToCache("categories", catsRemote);
-      saveToCache("assets", cleanAssets);
-      saveToCache("liabilities", cleanLiab);
-      saveToCache("lifeEvents", cleanEvents);
-      saveToCache("sips", cleanSips);
-      saveToCache("insurance", cleanIns);
-      saveToCache("investments", cleanInv);
-      saveToCache("gold", cleanGold);
-      saveToCache("properties", cleanProp);
-      saveToCache("creditScore", cleanCs);
-      saveToCache("fraudAlerts", cleanFraud);
-      saveToCache("goals", cleanGoals);
-      saveToCache("budgets", cleanBudgets);
-      saveToCache("subscriptions", cleanSubs);
-      saveToCache("buckets", cleanBuckets);
-      saveToCache("bucketContributions", cleanBucketContribs);
-      saveToCache("structuredLoans", cleanStructuredLoans);
-      saveToCache("creditCards", cleanCreditCards);
-      saveToCache("householdStaff", cleanHouseholdStaff);
-      saveToCache("societyNotices", cleanSocietyNotices);
-      saveToCache("householdReminders", cleanHouseholdReminders);
+      // ── Persist cleaned data to local cache ONLY if non-empty (never overwrite with []) ──
+      if (cleanTx.length > 0) saveToCache("transactions", cleanTx);
+      if (cleanLoans.length > 0) saveToCache("loans", cleanLoans);
+      if (catsRemote.length > 0) saveToCache("categories", catsRemote);
+      if (cleanAssets.length > 0) saveToCache("assets", cleanAssets);
+      if (cleanLiab.length > 0) saveToCache("liabilities", cleanLiab);
+      if (cleanEvents.length > 0) saveToCache("lifeEvents", cleanEvents);
+      if (cleanSips.length > 0) saveToCache("sips", cleanSips);
+      if (cleanIns.length > 0) saveToCache("insurance", cleanIns);
+      if (cleanInv.length > 0) saveToCache("investments", cleanInv);
+      if (cleanGold.length > 0) saveToCache("gold", cleanGold);
+      if (cleanProp.length > 0) saveToCache("properties", cleanProp);
+      if (cleanCs.length > 0) saveToCache("creditScore", cleanCs);
+      if (cleanFraud.length > 0) saveToCache("fraudAlerts", cleanFraud);
+      if (cleanGoals.length > 0) saveToCache("goals", cleanGoals);
+      if (cleanBudgets.length > 0) saveToCache("budgets", cleanBudgets);
+      if (cleanSubs.length > 0) saveToCache("subscriptions", cleanSubs);
+      if (cleanBuckets.length > 0) saveToCache("buckets", cleanBuckets);
+      if (cleanBucketContribs.length > 0) saveToCache("bucketContributions", cleanBucketContribs);
+      if (cleanStructuredLoans.length > 0) saveToCache("structuredLoans", cleanStructuredLoans);
+      if (cleanCreditCards.length > 0) saveToCache("creditCards", cleanCreditCards);
+      if (cleanHouseholdStaff.length > 0) saveToCache("householdStaff", cleanHouseholdStaff);
+      if (cleanSocietyNotices.length > 0) saveToCache("societyNotices", cleanSocietyNotices);
+      if (cleanHouseholdReminders.length > 0) saveToCache("householdReminders", cleanHouseholdReminders);
+
+      // Keep permanent safety snapshot fresh
+      void savePermanentBackupSnapshot();
     } catch (e) {
       console.error("Initial store load failed:", e);
     } finally {
@@ -702,34 +816,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── Auto-persist every state array to local IndexedDB cache ──
   // This ensures data is never lost even if the app is closed before a cloud sync.
   // The `ready` guard prevents overwriting cache with empty initial state on first render.
-  useEffect(() => { if (ready) saveToCache("transactions", transactions); }, [ready, transactions]);
-  useEffect(() => { if (ready) saveToCache("loans", loans); }, [ready, loans]);
-  useEffect(() => { if (ready) saveToCache("structuredLoans", structuredLoans); }, [ready, structuredLoans]);
-  useEffect(() => { if (ready) saveToCache("creditCards", creditCards); }, [ready, creditCards]);
-  useEffect(() => { if (ready) saveToCache("assets", assets); }, [ready, assets]);
-  useEffect(() => { if (ready) saveToCache("liabilities", liabilities); }, [ready, liabilities]);
-  useEffect(() => { if (ready) saveToCache("lifeEvents", lifeEvents); }, [ready, lifeEvents]);
-  useEffect(() => { if (ready) saveToCache("sips", sips); }, [ready, sips]);
-  useEffect(() => { if (ready) saveToCache("insurance", insurance); }, [ready, insurance]);
-  useEffect(() => { if (ready) saveToCache("investments", investments); }, [ready, investments]);
-  useEffect(() => { if (ready) saveToCache("gold", gold); }, [ready, gold]);
-  useEffect(() => { if (ready) saveToCache("properties", properties); }, [ready, properties]);
-  useEffect(() => { if (ready) saveToCache("creditScore", creditScore); }, [ready, creditScore]);
-  useEffect(() => { if (ready) saveToCache("fraudAlerts", fraudAlerts); }, [ready, fraudAlerts]);
-  useEffect(() => { if (ready) saveToCache("goals", goals); }, [ready, goals]);
-  useEffect(() => { if (ready) saveToCache("budgets", budgets); }, [ready, budgets]);
-  useEffect(() => { if (ready) saveToCache("subscriptions", subscriptions); }, [ready, subscriptions]);
-  useEffect(() => { if (ready) saveToCache("buckets", buckets); }, [ready, buckets]);
-  useEffect(() => { if (ready) saveToCache("bucketContributions", bucketContributions); }, [ready, bucketContributions]);
-  useEffect(() => { if (ready) saveToCache("householdStaff", householdStaff); }, [ready, householdStaff]);
-  useEffect(() => { if (ready) saveToCache("societyNotices", societyNotices); }, [ready, societyNotices]);
-  useEffect(() => { if (ready) saveToCache("householdReminders", householdReminders); }, [ready, householdReminders]);
+  useEffect(() => { if (ready && allTransactions.length > 0) saveToCache("transactions", allTransactions); }, [ready, allTransactions]);
+  useEffect(() => { if (ready && loans.length > 0) saveToCache("loans", loans); }, [ready, loans]);
+  useEffect(() => { if (ready && structuredLoans.length > 0) saveToCache("structuredLoans", structuredLoans); }, [ready, structuredLoans]);
+  useEffect(() => { if (ready && creditCards.length > 0) saveToCache("creditCards", creditCards); }, [ready, creditCards]);
+  useEffect(() => { if (ready && assets.length > 0) saveToCache("assets", assets); }, [ready, assets]);
+  useEffect(() => { if (ready && liabilities.length > 0) saveToCache("liabilities", liabilities); }, [ready, liabilities]);
+  useEffect(() => { if (ready && lifeEvents.length > 0) saveToCache("lifeEvents", lifeEvents); }, [ready, lifeEvents]);
+  useEffect(() => { if (ready && sips.length > 0) saveToCache("sips", sips); }, [ready, sips]);
+  useEffect(() => { if (ready && insurance.length > 0) saveToCache("insurance", insurance); }, [ready, insurance]);
+  useEffect(() => { if (ready && investments.length > 0) saveToCache("investments", investments); }, [ready, investments]);
+  useEffect(() => { if (ready && gold.length > 0) saveToCache("gold", gold); }, [ready, gold]);
+  useEffect(() => { if (ready && properties.length > 0) saveToCache("properties", properties); }, [ready, properties]);
+  useEffect(() => { if (ready && creditScore.length > 0) saveToCache("creditScore", creditScore); }, [ready, creditScore]);
+  useEffect(() => { if (ready && fraudAlerts.length > 0) saveToCache("fraudAlerts", fraudAlerts); }, [ready, fraudAlerts]);
+  useEffect(() => { if (ready && goals.length > 0) saveToCache("goals", goals); }, [ready, goals]);
+  useEffect(() => { if (ready && budgets.length > 0) saveToCache("budgets", budgets); }, [ready, budgets]);
+  useEffect(() => { if (ready && subscriptions.length > 0) saveToCache("subscriptions", subscriptions); }, [ready, subscriptions]);
+  useEffect(() => { if (ready && buckets.length > 0) saveToCache("buckets", buckets); }, [ready, buckets]);
+  useEffect(() => { if (ready && bucketContributions.length > 0) saveToCache("bucketContributions", bucketContributions); }, [ready, bucketContributions]);
+  useEffect(() => { if (ready && householdStaff.length > 0) saveToCache("householdStaff", householdStaff); }, [ready, householdStaff]);
+  useEffect(() => { if (ready && societyNotices.length > 0) saveToCache("societyNotices", societyNotices); }, [ready, societyNotices]);
+  useEffect(() => { if (ready && householdReminders.length > 0) saveToCache("householdReminders", householdReminders); }, [ready, householdReminders]);
   useEffect(() => { if (ready) saveToCache("notificationSound", [notificationSound]); }, [ready, notificationSound]);
-  useEffect(() => { if (ready) localReplace("notes", notes); }, [ready, notes]);
+  useEffect(() => { if (ready && notes.length > 0) localReplace("notes", notes); }, [ready, notes]);
   useEffect(() => {
     if (ready) {
       const catObjects = categories.filter((c) => !DEFAULT_CATEGORIES.includes(c)).map((c) => ({ id: c, name: c }));
-      saveToCache("categories", catObjects);
+      if (catObjects.length > 0) saveToCache("categories", catObjects);
     }
   }, [ready, categories]);
 
@@ -738,34 +852,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sub = api.onAuth((signedIn) => {
       if (!signedIn) {
-        setTransactions([]);
-        setGoals([]);
-        setBudgets([]);
-        setSubscriptions([]);
-        setLoans([]);
-        setStructuredLoans([]);
-        setCreditCards([]);
-        setAssets([]);
-        setLiabilities([]);
-        setLifeEvents([]);
-        setCategories(DEFAULT_CATEGORIES);
-        setSips([]);
-        setInsurance([]);
-        setInvestments([]);
-        setGold([]);
-        setProperties([]);
-        setCreditScore([]);
-        setFraudAlerts([]);
-        setHouseholdStaff([]);
-        setSocietyNotices([]);
-        setHouseholdReminders([]);
-        setNotes([]);
-        setReady(false);
-        // NOTE: device data is intentionally NOT erased on sign-out — it exists
-        // only on this device. A different account signing in triggers a wipe
-        // (claimDeviceFor in localDb.ts), so there is no data bleed.
-        clearQueue();
-
+        // Safe check: Only clear in-memory state if there is truly no cached offline session
+        loadAuthSession().then((cached) => {
+          if (!cached) {
+            setTransactions([]);
+            setGoals([]);
+            setBudgets([]);
+            setSubscriptions([]);
+            setLoans([]);
+            setStructuredLoans([]);
+            setCreditCards([]);
+            setAssets([]);
+            setLiabilities([]);
+            setLifeEvents([]);
+            setCategories(DEFAULT_CATEGORIES);
+            setSips([]);
+            setInsurance([]);
+            setInvestments([]);
+            setGold([]);
+            setProperties([]);
+            setCreditScore([]);
+            setFraudAlerts([]);
+            setHouseholdStaff([]);
+            setSocietyNotices([]);
+            setHouseholdReminders([]);
+            setNotes([]);
+            setReady(false);
+            clearQueue();
+          }
+        }).catch(() => {});
       }
     });
     return () => { sub.data.subscription.unsubscribe(); };
@@ -778,11 +893,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   //   3. If online  → call API in background, swap localId → serverId on success
   //   4. If offline → enqueue op; drain runs on reconnect
 
-  const addTransaction = useCallback(async (t: Omit<Tx, "id">) => {
+  const addTransaction = useCallback(async (t: Omit<Tx, "id">, opts?: { silent?: boolean }) => {
     const localId = crypto.randomUUID();
     const optimistic: Tx = { ...t, id: localId, createdAt: new Date().toISOString() };
 
-    feedback({
+    if (!opts?.silent) feedback({
       kind: t.type === "income" ? "income" : "expense",
       title: t.type === "income" ? "Income added" : "Expense recorded",
       amount: Math.abs(Number(t.amount) || 0),
@@ -842,9 +957,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (WRITE_LOCALLY) {
       try {
         await api.remove("transactions", id);
+        notify.info("Transaction deleted");
         return { ok: true };
       } catch (e: any) {
         console.error("deleteTransaction failed:", e);
+        notify.error("Could not delete transaction");
         return { ok: false, error: e.message || "Delete failed" };
       }
     } else {
@@ -853,6 +970,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+
+  const allTxRef = useRef<Tx[]>([]);
+  allTxRef.current = allTransactions;
+
+  const addTransfer = useCallback<StoreCtx["addTransfer"]>(async (input) => {
+    if (!(Math.abs(input.amount) > 0)) return;
+    if (input.fromAccountId && input.fromAccountId === input.toAccountId) {
+      notify.error("Choose two different accounts");
+      return;
+    }
+    const legs = buildTransferLegs({ ...input, transferId: crypto.randomUUID() });
+    await addTransaction(legs.out as Omit<Tx, "id">, { silent: true });
+    await addTransaction(legs.in as Omit<Tx, "id">, { silent: true });
+    notify.info("Transfer recorded — not counted as income or expense");
+  }, [addTransaction]);
+
+  const linkTransfer = useCallback<StoreCtx["linkTransfer"]>(async (outId, inId) => {
+    const o = allTxRef.current.find((x) => x.id === outId);
+    const i = allTxRef.current.find((x) => x.id === inId);
+    if (!o || !i) return;
+    const [to, ti] = applyTransferPair(o, i, crypto.randomUUID());
+    await updateTransaction(to);
+    await updateTransaction(ti);
+  }, [updateTransaction]);
+
+  const unlinkTransfer = useCallback<StoreCtx["unlinkTransfer"]>(async (transferId) => {
+    const legs = allTxRef.current.filter((x) => x.transferId === transferId);
+    for (const leg of legs) await updateTransaction(clearTransfer(leg));
+  }, [updateTransaction]);
+
+  const transferSuggestions = useMemo(() => suggestTransferPairs(allTransactions as any), [allTransactions]);
 
   const addLoan = useCallback(async (l: Omit<Loan, "id">) => {
     const localId = crypto.randomUUID();
@@ -1505,6 +1653,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       setReady(false);
       await eraseAllUserData();
+      clearAiConfig(); // the user's own AI key lives only on this device — erase it with everything else
       // Reset in-memory state to match the now-empty device database.
       setTransactions([]); setGoals([]); setBudgets([]); setSubscriptions([]); setLoans([]);
       setStructuredLoans([]); setCreditCards([]); setAssets([]); setLiabilities([]); setLifeEvents([]);
@@ -1517,6 +1666,60 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setReady(true);
     }
   };
+
+  // ── Loan auto-debit ────────────────────────────────────────────────────
+  // Mirrors the bank's e-mandate: every instalment that has fallen due is recorded as an expense on the
+  // linked account and the loan moves on (Pre-EMI stays Pre-EMI; a real EMI reduces principal). Runs on
+  // launch and whenever loans change, and back-fills months the app was closed. Safe to re-run: a due
+  // date already in the ledger is never recorded twice.
+  const autoDebitLatest = useRef({ transactions, structuredLoans, addTransaction, updateStructuredLoan });
+  autoDebitLatest.current = { transactions, structuredLoans, addTransaction, updateStructuredLoan };
+  const autoDebitBusy = useRef(false);
+  const loanDueSignature = structuredLoans.map((l) => `${l.id}:${l.nextEmiDueDate}:${l.autoDebit ? 1 : 0}:${l.closed ? 1 : 0}`).join("|");
+  useEffect(() => {
+    if (!ready || autoDebitBusy.current) return;
+    const today = todayISO();
+    const pending = autoDebitLatest.current.structuredLoans.filter((l) => dueInstallments(l, today).length > 0);
+    if (pending.length === 0) return;
+    autoDebitBusy.current = true;
+    (async () => {
+      const posted: string[] = [];
+      let total = 0;
+      try {
+        for (const loan0 of pending) {
+          let loan = loan0;
+          for (const due of dueInstallments(loan0, today)) {
+            const { transactions: ledger, addTransaction: add } = autoDebitLatest.current;
+            if (!alreadyRecorded(ledger, loan.id, due.dueDate)) {
+              await add(buildInstallmentTx(loan, due, { auto: true }), { silent: true });
+              total += due.amount;
+              posted.push(`${loan.lenderName} ${due.kind === "pre_emi" ? "Pre-EMI" : "EMI"}`);
+              // keep the manually tracked bank balance in step with the debit
+              if (loan.autoDebitBankAccountId) {
+                try {
+                  const accounts = await api.list<any>("accounts");
+                  const acc = accounts.find((a) => a.id === loan.autoDebitBankAccountId);
+                  if (acc && typeof acc.balance === "number") await api.create("accounts", { ...acc, balance: acc.balance - due.amount });
+                } catch (e) { console.warn("[auto-debit] balance update skipped", e); }
+              }
+            }
+            loan = applyInstallment(loan, due.kind);
+          }
+          await autoDebitLatest.current.updateStructuredLoan(loan);
+        }
+        if (posted.length) {
+          notify.info(
+            posted.length === 1 ? `Auto-debit recorded: ${posted[0]}` : `${posted.length} loan debits recorded`,
+            `₹${Math.round(total).toLocaleString("en-IN")} added to your expenses.`,
+          );
+        }
+      } catch (e) {
+        console.error("[auto-debit] failed, will retry on next launch:", e);
+      } finally {
+        autoDebitBusy.current = false;
+      }
+    })();
+  }, [ready, loanDueSignature]);
 
   // ── Notes & bill reminders ─────────────────────────────────────────────
   const notesRef = useRef<Note[]>([]);
@@ -1561,14 +1764,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      ready, transactions, buckets, bucketContributions, goals, budgets, subscriptions, loans, structuredLoans, creditCards,
+      ready, transactions, allTransactions, buckets, bucketContributions, goals, budgets, subscriptions, loans, structuredLoans, creditCards,
       assets, liabilities, lifeEvents, categories,
       sips, insurance, investments, gold, properties, creditScore, fraudAlerts,
       householdStaff, societyNotices, householdReminders,
       notes, upsertNote, removeNote, payBill,
       notificationSound, setNotificationSound,
       selectedMonth, setSelectedMonth, deleteAllData,
-      addTransaction, updateTransaction, deleteTransaction, addLoan, settleLoan, removeLoan,
+      addTransaction, addTransfer, linkTransfer, unlinkTransfer, transferSuggestions, updateTransaction, deleteTransaction, addLoan, settleLoan, removeLoan,
       addStructuredLoan, updateStructuredLoan, removeStructuredLoan,
       addCreditCard, updateCreditCard, removeCreditCard,
       addCategory, removeCategory,

@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { Sparkles, Loader2, Check, Clock } from "lucide-react";
 import { api } from "../lib/api";
-import { LiveSyncLogoMark } from "./LiveSyncLogo";
 import { GoogleAuth } from "@codetrix-studio/capacitor-google-auth";
 import { Capacitor } from "@capacitor/core";
 import { getGoogleWebClientId, GOOGLE_CONFIGURATION_ERROR } from "../lib/googleAuth";
 import { investorDemoCredentials, isInvestorDemo } from "../lib/demo";
+import { notify } from "../lib/notify";
 
 export function Auth({ onAuthed }: { onAuthed: () => void }) {
   const [mode, setMode] = useState<"signin" | "forgot">("signin");
@@ -69,10 +69,13 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
       } else if (mode === "forgot") {
         await api.resetPassword(email);
         setSuccess("Password reset link sent! Check your inbox (and spam folder).");
+        notify.success("Reset link sent", "Check your inbox and spam folder.");
         startCooldown();
       }
     } catch (e: any) {
-      setErr(friendlyError(e.message || "Something went wrong"));
+      const msg = friendlyError(e.message || "Something went wrong");
+      setErr(msg);
+      notify.error("Sign-in failed", msg);
     } finally {
       setLoading(false);
     }
@@ -123,22 +126,19 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
   };
 
   return (
-    <div className="flex-1 flex flex-col px-7 pt-16 pb-8 bg-gradient-to-b from-primary/5 to-background">
+    <div className="flex-1 flex flex-col px-7 pt-16 pb-8 bg-background fade-up">
       <div className="flex items-center gap-3 mb-10">
-        <div className="size-12 rounded-2xl bg-white shadow-md border border-slate-100 p-2 flex items-center justify-center">
-          <LiveSyncLogoMark className="size-full" />
-        </div>
+        <span className="flex size-11 items-center justify-center rounded-full bg-primary">
+          <span className="size-3.5 rounded-full bg-white" />
+        </span>
         <div>
-          <div className="font-display flex items-baseline gap-1" style={{ fontSize: 20, fontWeight: 800 }}>
-            <span>LiveSync</span>
-            <span className="text-[#0066FF]" style={{ fontWeight: 900 }}>AI</span>
-          </div>
+          <div className="text-[17px] font-semibold tracking-tight">LiveSyncAI</div>
           <div className="text-xs text-muted-foreground -mt-0.5">Your financial OS</div>
         </div>
       </div>
 
       <div className="mb-6">
-        <h1 className="font-display" style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.15 }}>
+        <h1 className="display-tight" style={{ fontSize: 30, fontWeight: 700 }}>
           {isInvestorDemo ? "Investor demo" : mode === "signup" ? "Create your account" : mode === "forgot" ? "Reset password" : "Welcome back"}
         </h1>
         <p className="text-sm text-muted-foreground mt-2">
@@ -204,7 +204,7 @@ export function Auth({ onAuthed }: { onAuthed: () => void }) {
       <button
         onClick={submit}
         disabled={loading || !canSubmit || (mode === "forgot" && resendCooldown > 0)}
-        className="w-full mt-6 bg-primary text-primary-foreground rounded-xl py-3.5 text-sm disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.97] transition-transform duration-150"
+        className="w-full mt-6 bg-primary text-primary-foreground rounded-full py-3.5 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
         style={{ fontWeight: 700 }}
       >
         {loading && <Loader2 className="size-4 animate-spin" />}
@@ -242,7 +242,7 @@ function Field({ label, value, onChange, placeholder, type = "text" }: { label: 
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="mt-1 w-full bg-card border border-border rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+        className="mt-1.5 w-full bg-card border border-border rounded-xl px-4 py-3 text-[14.5px] outline-none placeholder:text-slate-400"
       />
     </label>
   );

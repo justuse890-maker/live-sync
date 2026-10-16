@@ -7,14 +7,14 @@
 //                        buckets via the existing addBucketContribution()
 //                        call. NOT a real bank transfer — no payment
 //                        aggregator license needed.
-//   "draft_message"   → asks Gemini (via api.negotiationScript) to draft a
+//   "draft_message"   → asks the user's own AI (BYOK, via negotiationScript) to draft a
 //                        cancellation/negotiation message. The app never
 //                        sends anything itself — the user copies and sends
 //                        it, which keeps LiveSync out of "acting on your
 //                        behalf" territory.
 import { useState } from "react";
 import { Check, Copy, Loader2, PiggyBank, Sparkles } from "lucide-react";
-import { api } from "../lib/api";
+import { negotiationScript } from "../lib/aiClient";
 import { inr } from "./types";
 
 type MoveToBucketAction = {
@@ -60,13 +60,12 @@ export function ActionCard({ title, subtitle, action }: { title: string; subtitl
   const runDraftMessage = async (a: DraftMessageAction) => {
     setStatus("loading");
     try {
-      const result = await api.negotiationScript(a.negotiationKind, a.context);
+      const result = await negotiationScript(a.negotiationKind, a.context);
       setDraftText(result.text);
       setStatus("done");
     } catch (e: any) {
       setStatus("error");
-      const msg: string = e?.message || "Couldn't draft this message.";
-      setErrorMsg(msg.startsWith("RATE_LIMIT:") ? msg.replace("RATE_LIMIT: ", "") : msg);
+      setErrorMsg(e?.message || "Couldn't draft this message.");
     }
   };
 

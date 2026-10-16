@@ -9,6 +9,7 @@ import { Header, Screen } from "../Shell";
 import { inr } from "../types";
 import { useStore, Bucket } from "../../store";
 import { api } from "../../lib/api";
+import { BUCKET_KINDS, BucketKind } from "../../lib/salarySplit";
 import { cleanBucketFields, sanitizeBucket } from "../../lib/fieldCrypto";
 import { format, parseISO } from "date-fns";
 import { getGoalDeadlineMetrics, getQuickDatePreset, isValidGoalDate } from "../../lib/dateUtils";
@@ -33,6 +34,8 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
   const [editDeadline, setEditDeadline] = useState("");
   const [editMonthlyTarget, setEditMonthlyTarget] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [editKind, setEditKind] = useState<BucketKind | undefined>(undefined);
+  const [editAlloc, setEditAlloc] = useState("");
   const [editIcon, setEditIcon] = useState("PiggyBank");
   const [editColor, setEditColor] = useState("#1E40AF");
   const [isUpdating, setIsUpdating] = useState(false);
@@ -98,6 +101,8 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
     setEditDeadline(isValidGoalDate(clean.targetDate) ? (clean.targetDate || "") : "");
     setEditMonthlyTarget(clean.monthlySaveTarget ? String(clean.monthlySaveTarget) : "");
     setEditNotes(displayDesc || "");
+    setEditKind(bucket.kind);
+    setEditAlloc(bucket.allocPct ? String(bucket.allocPct) : "");
     setEditIcon(iconName);
     setEditColor(color);
     setEditOpen(true);
@@ -117,6 +122,8 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
         targetDate: editDeadline.trim() || undefined,
         monthlySaveTarget: editMonthlyTarget ? Number(editMonthlyTarget) : undefined,
         description: editNotes.trim() || undefined,
+        kind: editKind,
+        allocPct: editAlloc && Number(editAlloc) > 0 ? Math.min(100, Number(editAlloc)) : undefined,
         iconOrColor: `${editIcon}:${editColor}`,
       };
       await updateBucket(updated);
@@ -531,6 +538,29 @@ export function BucketDetail({ onBack }: { onBack?: () => void }) {
                   value={editMonthlyTarget}
                   onChange={(e) => setEditMonthlyTarget(e.target.value)}
                   placeholder="e.g. 10000"
+                  className="w-full rounded-xl border border-border px-3.5 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">What is this bucket for?</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {BUCKET_KINDS.map((k) => (
+                    <button key={k.id} type="button" onClick={() => setEditKind(k.id)} title={k.hint} className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${editKind === k.id ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{k.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground font-bold block mb-1">Share of each salary (%) — optional</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={100}
+                  value={editAlloc}
+                  onChange={(e) => setEditAlloc(e.target.value)}
+                  placeholder="e.g. 20 — 20% of every salary goes here"
                   className="w-full rounded-xl border border-border px-3.5 py-2.5 text-sm bg-background focus:ring-2 focus:ring-primary/20 outline-none"
                 />
               </div>

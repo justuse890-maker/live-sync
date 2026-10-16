@@ -13,6 +13,7 @@ import {
 import { daysUntil } from "../../lib/obligations";
 import { feedback, tap } from "../../lib/feedback";
 import { getNotificationPermission, requestNotificationPermission } from "../../lib/notifications";
+import { LEAD_CHOICES, leadLabel } from "../../lib/reminderPlan";
 
 type Tab = "notes" | "reminders" | "bills" | "archive";
 
@@ -349,7 +350,7 @@ function NoteEditor({ note, categories, onChange, onClose, onDelete, onPay, onSk
 
   const setReminderAt = (d: Date, repeat?: Repeat) => {
     tap();
-    set({ reminder: { at: d.toISOString(), repeat: repeat ?? n.reminder?.repeat ?? (bill ? "monthly" : "none") } });
+    set({ reminder: { ...n.reminder, at: d.toISOString(), repeat: repeat ?? n.reminder?.repeat ?? (bill ? "monthly" : "none") } });
   };
   const quick = (() => {
     const now = new Date();
@@ -503,7 +504,7 @@ function NoteEditor({ note, categories, onChange, onClose, onDelete, onPay, onSk
                   onChange={(e) => {
                     const r = e.target.value as Repeat;
                     const at = n.reminder?.at ?? quick[1].d.toISOString();
-                    set({ reminder: { at, repeat: r } });
+                    set({ reminder: { ...n.reminder, at, repeat: r } });
                   }}
                   className="mt-1 w-full rounded-lg border border-slate-200 px-2.5 py-2 text-sm text-slate-900 bg-white"
                 >
@@ -511,6 +512,20 @@ function NoteEditor({ note, categories, onChange, onClose, onDelete, onPay, onSk
                 </select>
               </label>
             </div>
+            {bill && n.reminder && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <label className="text-xs text-slate-500 font-semibold">
+                  Alert me
+                  <select value={n.reminder.leadDays ?? 1} onChange={(e) => set({ reminder: { ...n.reminder!, leadDays: Number(e.target.value) } })} className="mt-1 w-full rounded-lg border border-slate-200 px-2.5 py-2 text-sm text-slate-900 bg-white">
+                    {LEAD_CHOICES.map((d) => <option key={d} value={d}>{d === 7 ? "A week before" : leadLabel(d)}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 font-semibold">
+                  Alert time
+                  <input type="time" value={n.reminder.time ?? "09:00"} onChange={(e) => e.target.value && set({ reminder: { ...n.reminder!, time: e.target.value } })} className="mt-1 w-full rounded-lg border border-slate-200 px-2.5 py-2 text-sm text-slate-900" />
+                </label>
+              </div>
+            )}
             <div className="flex gap-2 mt-3">
               {n.reminder && <button onClick={() => { set({ reminder: undefined }); setShowReminder(false); }} className="flex-1 text-xs font-bold text-rose-600 bg-rose-50 rounded-lg py-2">Remove</button>}
               <button onClick={() => setShowReminder(false)} className="flex-1 text-xs font-bold text-white bg-indigo-600 rounded-lg py-2">Done</button>

@@ -67,11 +67,8 @@ export function ConnectedAccounts({ onBack, go }: { onBack: () => void; go?: (id
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [manualModalOpen, setManualModalOpen] = useState(false);
-  const [waitlistJoined, setWaitlistJoined] = useState(() => {
-    return localStorage.getItem("livesync_aa_waitlist") === "true";
-  });
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
-  const { transactions } = useStore();
+  const { allTransactions: transactions } = useStore(); // balances must see both legs of a transfer
 
   const load = async () => {
     try {
@@ -113,11 +110,6 @@ export function ConnectedAccounts({ onBack, go }: { onBack: () => void; go?: (id
     }
   };
 
-  const handleJoinWaitlist = () => {
-    const nextState = !waitlistJoined;
-    setWaitlistJoined(nextState);
-    localStorage.setItem("livesync_aa_waitlist", String(nextState));
-  };
 
   // ── Aggregate balance & per-account summaries ──
   const totalBalance = useMemo(
@@ -188,49 +180,6 @@ export function ConnectedAccounts({ onBack, go }: { onBack: () => void; go?: (id
             <p className="text-xs text-slate-300/90 leading-relaxed">
               LiveSync tracks the accounts and transactions you add. We do not ask for bank passwords or OTPs. All data stays on this phone; see Privacy & Data for details about storage and AI processing.
             </p>
-          </div>
-
-          {/* Automated Direct Sync: Coming Soon (Under RBI AA Regulatory Integration) */}
-          <div className="bg-card rounded-2xl p-4 border border-border/80 shadow-sm space-y-3">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="size-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
-                  <Building2 className="size-5" />
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-slate-800">Automated Direct Bank Sync</div>
-                  <div className="text-[11px] text-muted-foreground">RBI Account Aggregator (AA) Gateway</div>
-                </div>
-              </div>
-              <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full shrink-0">
-                Coming Soon
-              </span>
-            </div>
-
-            <div className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-border/50">
-              Direct automated bank linking via <strong>RBI Account Aggregator framework (Finvu, Setu, OneMoney)</strong> requires active NBFC-AA TSP compliance certification. We are completing the regulatory sandbox integration to bring read-only, consent-based bank synchronization safely.
-            </div>
-
-            <button
-              onClick={handleJoinWaitlist}
-              className={`w-full py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-sm ${
-                waitlistJoined
-                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  : "bg-primary text-primary-foreground hover:bg-primary/95"
-              }`}
-            >
-              {waitlistJoined ? (
-                <>
-                  <CheckCircle2 className="size-4 text-emerald-600" />
-                  <span>You're on the AA Early Access List</span>
-                </>
-              ) : (
-                <>
-                  <Bell className="size-3.5" />
-                  <span>Notify Me When Live AA Sync Launches</span>
-                </>
-              )}
-            </button>
           </div>
 
           {/* Manual Tracked Bank Accounts Section */}

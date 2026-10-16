@@ -8,14 +8,13 @@ import { useEntitlements } from "../../lib/useEntitlements";
 import { useCountry } from "../../lib/useCountry";
 import { fmt } from "../../lib/taxPacks";
 import { clusterRows, RawRow, Cluster } from "../../lib/merchantNormalize";
-import { supabase } from "../../lib/api";
-import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
+import { aiReady, normalizeMerchants } from "../../lib/aiClient";
+import { AiError } from "../../lib/byok";
+import { PdfReadError, entriesToTable, parseStatementRows, readPdfRows } from "../../lib/statementPdf";
 
 type Step = "upload" | "map" | "review" | "confirm";
 
 type Mapping = { date: string; description: string; amount: string; type?: string; category?: string; debit?: string; credit?: string };
-
-const AI_NORMALIZE_URL = `https://${projectId}.supabase.co/functions/v1/make-server-a3fe149f/ai/normalize-merchants`;
 
 function parseCSV(text: string): string[][] {
   const rows: string[][] = [];
@@ -96,7 +95,7 @@ export function ImportTransactions({ onBack, onUpgrade }: { onBack: () => void; 
         <button onClick={onBack} className="size-9 rounded-full bg-muted flex items-center justify-center"><ArrowLeft className="size-4" /></button>
         <div>
           <h1 className="text-lg font-semibold">Import transactions</h1>
-          <p className="text-xs text-muted-foreground">From CSV — bank, wallet, or another app.</p>
+          <p className="text-xs text-muted-foreground">From a CSV or your bank statement PDF.</p>
         </div>
       </div>
       <PremiumLock
@@ -127,8 +126,36 @@ function Importer() {
   const [skippedCount, setSkippedCount] = useState(0);
   const [includeDuplicates, setIncludeDuplicates] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [pdfBuf, setPdfBuf] = useState<ArrayBuffer | null>(null);
+  const [pdfPassword, setPdfPassword] = useState("");
+  const [pdfNeedsPw, setPdfNeedsPw] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfMsg, setPdfMsg] = useState<string | null>(null);
+  const [pdfNote, setPdfNote] = useState<string | null>(null);
+
+  const readPdf = async (buf: ArrayBuffer, password?: string) => {
+    setPdfBusy(true); setPdfMsg(null);
+    try {
+      const parsed = parseStatementRows(await readPdfRows(buf, password));
+      if (parsed.entries.length === 0) { setPdfMsg("No transactions were found in this PDF. Download the statement as CSV from your bank if you can."); return; }
+      const table = entriesToTable(parsed.entries);
+      const unknown = parsed.entries.filter((e) => e.type === "unknown").length;
+      setPdfNote(`Read ${parsed.entries.length} rows from the PDF on this phone.${unknown ? ` ${unknown} could not be told apart as money in or out and are set as spending — check them in the next steps.` : ""} Compare the totals with your statement before saving.`);
+      setHeaders(table.headers); setRows(table.rows); setMapping(guessMapping(table.headers));
+      setPdfBuf(null); setPdfNeedsPw(false); setPdfPassword("");
+      setStep("map");
+    } catch (e: any) {
+      if (e instanceof PdfReadError && (e.kind === "needs_password" || e.kind === "wrong_password")) { setPdfBuf(buf); setPdfNeedsPw(true); setPdfMsg(e.message); }
+      else setPdfMsg(e instanceof PdfReadError ? e.message : "Couldn't read this PDF.");
+    } finally { setPdfBusy(false); }
+  };
 
   const onFile = async (f: File) => {
+    if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") {
+      if (f.size > 25 * 1024 * 1024) { setPdfMsg("That PDF is larger than 25 MB."); return; }
+      await readPdf(await f.arrayBuffer());
+      return;
+    }
     const text = await f.text();
     const parsed = parseCSV(text);
     if (parsed.length < 2) { alert("CSV looks empty or has no header row."); return; }
@@ -205,6 +232,7 @@ function Importer() {
     const ambiguous = c.filter((cl) => cl.category === "Uncategorised");
     if (ambiguous.length === 0) return;
     if (!entitlements.import) return; // PremiumLock should have blocked, defensive
+    if (!aiReady()) return; // no key connected: local matching only, categories picked below
     void runAi(c);
   };
 
@@ -214,26 +242,18 @@ function Importer() {
     setAiBusy(true);
     setAiError(null);
     try {
-      const { data } = await supabase().auth.getSession();
-      const token = data.session?.access_token ?? publicAnonKey;
-      const res = await fetch(AI_NORMALIZE_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        // Only scrubbed merchant labels — no amounts, dates, UPI IDs or account numbers.
-        body: JSON.stringify({ merchants: ambiguous.map((a) => redactText(a.canonical)) }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `AI ${res.status}`);
+      // Only scrubbed merchant labels go to the user's own AI provider — no amounts, dates, UPI IDs or account numbers.
+      const items = await normalizeMerchants(ambiguous.map((a) => a.canonical));
       const map = new Map<string, { canonical: string; category: string }>();
-      for (const it of body.items || []) map.set((it.input || "").toUpperCase(), { canonical: it.canonical, category: it.category });
+      for (const it of items) map.set((it.input || "").toUpperCase(), { canonical: it.canonical, category: it.category });
       setClusters((prev) => prev.map((cl) => {
-        const hit = map.get(cl.canonical.toUpperCase());
+        const hit = map.get(redactText(cl.canonical).toUpperCase());
         if (!hit) return cl;
         return { ...cl, canonical: hit.canonical || cl.canonical, category: hit.category || cl.category, source: "ai" as const };
       }));
     } catch (e: any) {
       console.error("AI normalize failed:", e);
-      setAiError(e.message || "AI categorisation failed — pick categories manually below.");
+      setAiError(e instanceof AiError ? `${e.message} Pick categories manually below.` : "AI categorisation failed — pick categories manually below.");
     } finally {
       setAiBusy(false);
     }
@@ -291,13 +311,22 @@ function Importer() {
       {step === "upload" && (
         <div className="rounded-2xl border border-dashed border-border bg-card p-6 text-center space-y-3">
           <Upload className="size-8 mx-auto text-muted-foreground" />
-          <div className="text-sm font-medium">Upload a CSV</div>
-          <div className="text-xs text-muted-foreground">Any CSV with a date, description and amount. Your file is previewed before anything is saved.</div>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-          <button onClick={() => fileRef.current?.click()} className="h-10 px-4 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 inline-flex items-center gap-2">
-            <Upload className="size-4" /> Choose CSV file
+          <div className="text-sm font-medium">Upload a statement (CSV or PDF)</div>
+          <div className="text-xs text-muted-foreground">A CSV with a date, description and amount, or the PDF statement from your bank. It is read on this phone and previewed before anything is saved.</div>
+          <input ref={fileRef} type="file" accept=".csv,text/csv,.pdf,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
+          <button onClick={() => fileRef.current?.click()} disabled={pdfBusy} className="h-10 px-4 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 inline-flex items-center gap-2 disabled:opacity-50">
+            {pdfBusy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} {pdfBusy ? "Reading…" : "Choose CSV or PDF"}
           </button>
-          <div className="pt-1 text-[11px] text-muted-foreground flex items-center justify-center gap-1.5"><ShieldCheck className="size-3.5 text-emerald-600" /> LiveSync never asks for a bank password, PIN or OTP.</div>
+          {pdfNeedsPw && pdfBuf && (
+            <div className="text-left space-y-2 rounded-xl border border-border p-3">
+              <div className="text-xs font-semibold">Statement password</div>
+              <input type="password" value={pdfPassword} onChange={(e) => setPdfPassword(e.target.value)} autoComplete="off" placeholder="Often your customer ID, date of birth or PAN — check your bank's email" className="w-full h-10 rounded-lg border border-border bg-background px-3 text-sm" />
+              <button onClick={() => readPdf(pdfBuf, pdfPassword)} disabled={!pdfPassword || pdfBusy} className="w-full h-10 rounded-lg bg-indigo-600 text-white text-sm font-medium disabled:opacity-40">Unlock and read</button>
+              <div className="text-[11px] text-muted-foreground">Used once, on this phone, to open the file. It is never saved or sent anywhere.</div>
+            </div>
+          )}
+          {pdfMsg && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 text-left">{pdfMsg}</div>}
+          <div className="pt-1 text-[11px] text-muted-foreground flex items-center justify-center gap-1.5"><ShieldCheck className="size-3.5 text-emerald-600" /> LiveSync never asks for your net-banking password, PIN or OTP.</div>
         </div>
       )}
 
@@ -305,6 +334,7 @@ function Importer() {
         <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
           <div className="text-sm font-semibold">Map your columns</div>
           <div className="text-xs text-muted-foreground">Detected {rows.length} rows. Tell us which column is which.</div>
+          {pdfNote && <div className="text-xs text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">{pdfNote}</div>}
           <Field label="Date column" value={mapping.date} options={headers} onChange={(v) => setMapping({ ...mapping, date: v })} />
           <Field label="Description / merchant" value={mapping.description} options={headers} onChange={(v) => setMapping({ ...mapping, description: v })} />
           <Field label="Amount column (or leave blank to use debit/credit)" value={mapping.amount} options={["", ...headers]} onChange={(v) => setMapping({ ...mapping, amount: v })} />

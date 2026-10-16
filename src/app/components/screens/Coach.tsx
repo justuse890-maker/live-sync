@@ -1,405 +1,139 @@
-import { useState, useRef, useEffect } from "react";
-import {
-  Sparkles, Send, Brain, ShieldOff, Loader2, Key,
-  CheckSquare, Square, Trash2, RefreshCw, ExternalLink, Lock, Eye, EyeOff
-} from "lucide-react";
-import { coachSuggestions } from "../../data";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router";
+import { Send, Loader2, Lock, Settings2 } from "lucide-react";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
-import { useTranslation } from "../../lib/i18n";
-import { buildAiContext, redactText } from "../../lib/aiPrivacy";
+import { buildAiContext } from "../../lib/aiPrivacy";
+import { aiReady, coachReply, loadAiConfig } from "../../lib/aiClient";
+import { AiError, providerInfo } from "../../lib/byok";
+import { answer, Mood, SUGGESTIONS } from "../../lib/sparrow";
+import { buildObligations } from "../../lib/obligations";
+import { Sparrow } from "../Sparrow";
 
-type Msg = { role: "user" | "assistant"; text: string };
+type Msg = { role: "user" | "assistant"; text: string; source?: "phone" | "ai" };
 
-const GROQ_KEY_LS = "livesync-groq-api-key";
-const GROQ_OPT_LS = "livesync-groq-opted-in";
+const HELLO = "Hi, I'm Chiku. Ask me about your money — what happened last month, where it went, or whether you can afford something. I work it out from your own entries, right here on your phone.";
 
-// Ordered fallback chain — if first model is decommissioned, try next
-const MODEL_PRIORITY = [
-  "llama-3.3-70b-versatile",
-  "llama3-70b-8192",
-  "gemma2-9b-it",
-  "llama3-8b-8192",
-];
-
-async function callGroq(
-  apiKey: string,
-  messages: { role: string; content: string }[],
-  modelIndex = 0
-): Promise<string> {
-  if (modelIndex >= MODEL_PRIORITY.length) {
-    throw new Error("All available Groq models are currently unavailable. Please check your Groq console.");
-  }
-  const model = MODEL_PRIORITY[modelIndex];
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: 1024 }),
-  });
-
-  if (!res.ok) {
-    let errMsg = `HTTP ${res.status}`;
-    try {
-      const errData = await res.json();
-      errMsg = errData?.error?.message || errMsg;
-    } catch {}
-
-    // Decommissioned / not found → try next model automatically
-    if (res.status === 404 || errMsg.toLowerCase().includes("decommissioned") || errMsg.toLowerCase().includes("not supported")) {
-      console.warn(`Model ${model} unavailable, trying next…`);
-      return callGroq(apiKey, messages, modelIndex + 1);
-    }
-
-    // Auth failure — re-throw immediately so UI can handle it
-    if (res.status === 401 || res.status === 403) {
-      throw new Error("INVALID_KEY:" + errMsg);
-    }
-
-    throw new Error(errMsg);
-  }
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
-}
-
+/**
+ * Chiku the sparrow answers money questions.
+ *  • Anything it can calculate (recaps, category totals, "can I afford") is answered on the phone — no AI, no network.
+ *  • Open-ended questions go to the user's own AI provider, only if they connected one.
+ */
 export function Coach() {
-  const {
-    transactions, goals, budgets, subscriptions, loans,
-    assets, liabilities, sips, insurance, investments,
-    gold, properties, creditScore, fraudAlerts,
-  } = useStore();
+  const store = useStore();
+  const { transactions } = store;
+  const navigate = useNavigate();
 
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-
-  // Key & opt-in state
-  const [savedKey, setSavedKey] = useState(() => localStorage.getItem(GROQ_KEY_LS) || "");
-  const [opted, setOpted] = useState(() => localStorage.getItem(GROQ_OPT_LS) === "yes");
-  const [draftKey, setDraftKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [checkboxChecked, setCheckboxChecked] = useState(false);
-  const [setupErr, setSetupErr] = useState<string | null>(null);
-  const [changingKey, setChangingKey] = useState(false);
+  const [mood, setMood] = useState<Mood>("idle");
   const [showPayload, setShowPayload] = useState(false);
-  const { t } = useTranslation();
+  const connected = aiReady();
+  const cfg = loadAiConfig();
+
+  // Bills and EMIs still due before month end, for "can I afford …"
+  const stillToPay = useMemo(() => {
+    const now = new Date();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    return buildObligations(store as any, 31, 10)
+      .filter((o) => o.amount && (o.overdue || o.dueAt <= monthEnd))
+      .reduce((s, o) => s + (o.amount as number), 0);
+  }, [store.notes, store.structuredLoans, store.subscriptions, store.creditCards, store.insurance, store.householdReminders, store.societyNotices, store.loans]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, loading]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, loading]);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  const saveKey = () => {
-    const trimmed = draftKey.trim();
-    if (!trimmed) { setSetupErr("Please paste your Groq API key."); return; }
-    if (!trimmed.startsWith("gsk_")) { setSetupErr("That doesn't look like a Groq key (should start with gsk_)."); return; }
-    if (!checkboxChecked) { setSetupErr("Please read and accept the privacy policy first."); return; }
-    localStorage.setItem(GROQ_KEY_LS, trimmed);
-    localStorage.setItem(GROQ_OPT_LS, "yes");
-    setSavedKey(trimmed);
-    setOpted(true);
-    setChangingKey(false);
-    setSetupErr(null);
-  };
-
-  const revokeKey = () => {
-    localStorage.removeItem(GROQ_KEY_LS);
-    localStorage.removeItem(GROQ_OPT_LS);
-    setSavedKey("");
-    setOpted(false);
-    setDraftKey("");
-    setCheckboxChecked(false);
-    setMsgs([]);
-  };
-
-  // ── Send message ──────────────────────────────────────────────────────────
   const send = async (text: string) => {
-    if (!text.trim() || loading || !savedKey) return;
-
-    // Check master AI opt-in setting
-    const aiEnabled = localStorage.getItem("livesync_ai_opt_in") !== "false";
-    if (!aiEnabled) {
-      setMsgs((m) => [
-        ...m,
-        { role: "user", text },
-        {
-          role: "assistant",
-          text: "🔒 AI features are currently disabled in your **Security & Privacy** settings. To use AI Coach, please enable AI Data Sharing in Settings, or use our on-device financial insights.",
-        },
-      ]);
-      setInput("");
-      return;
-    }
-
-    const userMsg: Msg = { role: "user", text };
-    const updatedMsgs = [...msgs, userMsg];
-    setMsgs(updatedMsgs);
+    const question = text.trim();
+    if (!question || loading) return;
+    const history: Msg[] = [...msgs, { role: "user", text: question }];
+    setMsgs(history);
     setInput("");
     setLoading(true);
+    setMood("thinking");
 
     try {
-      // ── PRIVACY: minimum, anonymous, rounded data only (see lib/aiPrivacy.ts) ──
-      const context = buildAiContext(transactions as any);
-
-      const systemPrompt = `You are LiveSync AI Coach — a personal money coach for Indian users.
-Give concise, practical, encouraging coaching based ONLY on the anonymous monthly summary below.
-You do not know the user's name, location, accounts or individual transactions, and must not ask for them.
-Rules:
-- Use ₹ and Indian numbering (₹2,50,000)
-- Short, scannable replies (bullets)
-- Budgeting, category allocation (50/30/20), savings-rate advice
-- Never ask for passwords, OTPs, PAN, Aadhaar or account numbers
-
-Anonymous monthly summary (amounts rounded to ₹100):
-${JSON.stringify(context)}`;
-
-      const groqMessages = [
-        { role: "system", content: systemPrompt },
-        // Only the last 8 turns, scrubbed of phone/email/PAN/account numbers.
-        ...updatedMsgs.slice(-8).map((m) => ({ role: m.role, content: redactText(m.text) })),
-      ];
-
-      const responseText = await callGroq(savedKey, groqMessages);
-      setMsgs((m) => [...m, { role: "assistant", text: responseText }]);
-    } catch (err: any) {
-      const msg: string = err?.message || "Unknown error";
-      if (msg.startsWith("INVALID_KEY:")) {
-        setMsgs((m) => [
-          ...m,
-          {
-            role: "assistant",
-            text: "❌ Your Groq API key is invalid or expired. Tap the key icon in the header to update it.",
-          },
-        ]);
-      } else {
-        setMsgs((m) => [...m, { role: "assistant", text: `⚠️ ${msg}` }]);
+      // 1. Try to work it out on the phone.
+      const local = answer(question, { txs: transactions as any, stillToPay });
+      if (local) {
+        await new Promise((r) => setTimeout(r, 350)); // a beat, so the reply doesn't feel abrupt
+        setMsgs((m) => [...m, { role: "assistant", text: local.text, source: "phone" }]);
+        setMood(local.mood);
+        return;
       }
+      // 2. Otherwise the user's own AI, if they connected one.
+      if (connected) {
+        const reply = await coachReply(history.map(({ role, text }) => ({ role, text })), buildAiContext(transactions as any));
+        setMsgs((m) => [...m, { role: "assistant", text: reply, source: "ai" }]);
+        setMood("idle");
+        return;
+      }
+      setMsgs((m) => [...m, { role: "assistant", source: "phone", text: "That one needs more than my sums. I can tell you what happened in a month, what you spent on something, what you saved, or whether you can afford an amount. For open questions, you can connect your own AI in settings (top right)." }]);
+      setMood("idle");
+    } catch (err: any) {
+      const msg = err instanceof AiError ? err.message : err?.message || "Something went wrong.";
+      const hint = err instanceof AiError && (err.kind === "invalid_key" || err.kind === "model_unavailable") ? " Open AI settings (top right) to fix it." : "";
+      setMsgs((m) => [...m, { role: "assistant", text: `${msg}${hint}`, source: "ai" }]);
+      setMood("concerned");
     } finally {
       setLoading(false);
     }
   };
 
-  // ── Setup screen ──────────────────────────────────────────────────────────
-  if (!savedKey || !opted || changingKey) {
-    return (
-      <>
-        <Header
-          title={t("coach.title")}
-          subtitle={t("coach.setup")}
-          right={<div className="size-10 rounded-full bg-gradient-to-br from-primary/20 to-indigo-500/20 flex items-center justify-center"><Brain className="size-5 text-primary" /></div>}
-        />
-        <Screen>
-          <div className="px-5 pt-6 pb-8 space-y-5">
-
-            {/* Hero */}
-            <div className="text-center space-y-2 pt-4">
-              <div className="mx-auto size-16 rounded-3xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-lg shadow-primary/25">
-                <Sparkles className="size-7 text-white" />
-              </div>
-              <h2 className="font-display text-xl" style={{ fontWeight: 800 }}>{t("coach.liveSync")}</h2>
-              <p className="text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
-                {t("coach.poweredBy")}
-              </p>
-            </div>
-
-            {/* How it works */}
-            <div className="bg-primary/5 border border-primary/15 rounded-2xl p-4 space-y-3">
-              <p className="text-xs text-primary font-semibold uppercase tracking-wide">{t("coach.howToStart")}</p>
-              {[
-                { n: "1", t_key: "step1Title", d_key: "step1Desc", link: "https://console.groq.com/keys" },
-                { n: "2", t_key: "step2Title", d_key: "step2Desc" },
-                { n: "3", t_key: "step3Title", d_key: "step3Desc" },
-              ].map(step => (
-                <div key={step.n} className="flex items-start gap-3">
-                  <div className="size-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 text-xs font-bold">{step.n}</div>
-                  <div>
-                    <div className="text-sm font-semibold flex items-center gap-1">
-                      {t(`coach.${step.t_key}` as any)}
-                      {step.link && <a href={step.link} target="_blank" rel="noreferrer" className="text-primary"><ExternalLink className="size-3" /></a>}
-                    </div>
-                    <div className="text-xs text-muted-foreground">{t(`coach.${step.d_key}` as any)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Key input */}
-            <div className="bg-card border border-border/60 rounded-2xl p-4 space-y-4">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block" style={{ fontWeight: 600 }}>
-                  {t("coach.groqApiKey")} {savedKey && <span className="text-emerald-600">· {t("coach.currentlySet")}</span>}
-                </label>
-                <div className="relative">
-                  <Key className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                  <input
-                    type={showKey ? "text" : "password"}
-                    value={draftKey}
-                    onChange={e => { setDraftKey(e.target.value); setSetupErr(null); }}
-                    placeholder="gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                    className="w-full bg-muted/50 border border-border rounded-xl pl-9 pr-10 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30 font-mono"
-                  />
-                  <button
-                    onClick={() => setShowKey(v => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition"
-                  >
-                    {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Privacy opt-in */}
-              <button
-                onClick={() => setCheckboxChecked(v => !v)}
-                className="flex items-start gap-3 text-left group w-full"
-              >
-                <div className="mt-0.5 shrink-0 text-primary">
-                  {checkboxChecked
-                    ? <CheckSquare className="size-5" />
-                    : <Square className="size-5 text-muted-foreground group-hover:text-primary transition" />}
-                </div>
-                <div className="text-xs text-muted-foreground leading-relaxed">
-                  <span className="text-foreground font-semibold">{t("coach.privacyDataSharing")}</span>{" "}
-                  {t("coach.privacyText")}
-                </div>
-              </button>
-
-              {setupErr && (
-                <div className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
-                  {setupErr}
-                </div>
-              )}
-
-              <button
-                onClick={saveKey}
-                disabled={!draftKey || !checkboxChecked}
-                className="w-full bg-primary text-primary-foreground rounded-xl py-3.5 text-sm flex items-center justify-center gap-2 disabled:opacity-40 transition-opacity"
-                style={{ fontWeight: 700 }}
-              >
-                <Sparkles className="size-4" />
-                {changingKey ? t("coach.updateApiKey") : t("coach.startCoach")}
-              </button>
-
-              {changingKey && (
-                <button
-                  onClick={() => setChangingKey(false)}
-                  className="w-full text-sm text-muted-foreground text-center py-1"
-                >
-                  {t("coach.cancel")}
-                </button>
-              )}
-            </div>
-
-            {/* Privacy notice */}
-            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5">
-              <Lock className="size-4 text-emerald-600 shrink-0" />
-              <p className="text-xs text-emerald-700">
-                <strong>{t("coach.yourChoice")}</strong> {t("coach.privacyNotice")}
-              </p>
-            </div>
-          </div>
-        </Screen>
-      </>
-    );
-  }
-
-  // ── Main chat UI ──────────────────────────────────────────────────────────
   return (
     <>
       <Header
-        title={t("coach.title")}
-        subtitle={t("coach.subtitle")}
+        title="Ask Chiku"
+        subtitle="Your money sparrow"
         right={
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => { setChangingKey(true); setDraftKey(""); setCheckboxChecked(false); }}
-              className="size-9 rounded-full hover:bg-muted flex items-center justify-center transition text-muted-foreground"
-              title={t("coach.changeApiKey")}
-            >
-              <RefreshCw className="size-4" />
-            </button>
-            <button
-              onClick={revokeKey}
-              className="size-9 rounded-full hover:bg-rose-50 text-rose-500 flex items-center justify-center transition"
-              title={t("coach.removeApiKey")}
-            >
-              <ShieldOff className="size-4" />
-            </button>
-          </div>
+          <button onClick={() => navigate("/ai-settings")} className="size-9 rounded-full hover:bg-muted flex items-center justify-center transition text-muted-foreground" title="AI settings" aria-label="AI settings">
+            <Settings2 className="size-4" />
+          </button>
         }
       />
 
-      {/* Privacy: show exactly what is sent */}
-      <div className="px-5 pt-3">
-        <button onClick={() => setShowPayload((v) => !v)} className="w-full text-left flex items-center gap-2 bg-emerald-50 border border-emerald-200/80 rounded-xl px-3 py-2">
-          <Lock className="size-3.5 text-emerald-600 shrink-0" />
-          <p className="flex-1 text-[11px] text-emerald-800 font-medium">
-            Only rounded monthly totals are shared — no names, dates, merchants or account numbers. <span className="underline">{showPayload ? "Hide" : "See exactly what AI sees"}</span>
-          </p>
-        </button>
-        {showPayload && (
-          <pre className="mt-2 max-h-48 overflow-auto text-[10px] leading-snug bg-[#0F172A] text-emerald-200 rounded-xl p-3 whitespace-pre-wrap">{JSON.stringify(buildAiContext(transactions as any), null, 2)}</pre>
-        )}
-      </div>
-
       <Screen>
-        <div className="px-5 pt-4 pb-4 space-y-3">
+        <div className="px-5 pt-3 pb-40 space-y-3">
+          {/* Mascot + what it does with your data */}
+          <div className="flex items-end gap-3">
+            <Sparrow mood={loading ? "thinking" : mood} size={84} />
+            <div className="flex-1 bg-card border border-border/60 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">{HELLO}</div>
+          </div>
 
-          {/* Empty state / suggestions */}
-          {msgs.length === 0 && !loading && (
-            <div className="pt-2 space-y-4">
-              <div className="text-center space-y-1 py-4">
-                <div className="mx-auto size-14 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-md shadow-primary/20 mb-3">
-                  <Sparkles className="size-6 text-white" />
-                </div>
-                <p className="text-sm font-semibold text-slate-800">{t("coach.askAnything")}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t("coach.analyzeSpend")}
-                </p>
-              </div>
-              <div className="text-xs text-muted-foreground px-1 font-semibold uppercase tracking-wide">{t("coach.suggested")}</div>
-              <div className="space-y-2">
-                {coachSuggestions.map(s => (
-                  <button
-                    key={s}
-                    onClick={() => send(s)}
-                    disabled={loading}
-                    className="w-full text-left bg-card border border-border/60 rounded-xl px-4 py-3 text-sm hover:border-primary/40 hover:bg-primary/5 transition disabled:opacity-50"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
+          <button onClick={() => connected && setShowPayload((v) => !v)} className="w-full text-left flex items-start gap-2 bg-emerald-50 border border-emerald-200/80 rounded-xl px-3 py-2">
+            <Lock className="size-3.5 text-emerald-600 shrink-0 mt-0.5" />
+            <span className="flex-1 text-[11px] text-emerald-900 font-medium">
+              {connected
+                ? <>Sums are done on your phone. Open questions go to {cfg ? providerInfo(cfg.provider).label : "your AI"} as rounded monthly totals only. <span className="underline">{showPayload ? "Hide" : "See what AI sees"}</span></>
+                : <>Worked out on your phone. Nothing is sent anywhere.</>}
+            </span>
+          </button>
+          {showPayload && connected && <pre className="max-h-44 overflow-auto text-[10px] leading-snug bg-muted rounded-xl p-3 whitespace-pre-wrap">{JSON.stringify(buildAiContext(transactions as any), null, 2)}</pre>}
+
+          {msgs.length === 0 && (
+            <div className="space-y-2 pt-1">
+              <div className="text-[11px] text-muted-foreground px-1 font-semibold uppercase tracking-wide">Try asking</div>
+              {SUGGESTIONS.map((s) => (
+                <button key={s} onClick={() => send(s)} disabled={loading} className="w-full text-left bg-card border border-border/60 rounded-xl px-4 py-3 text-sm active:scale-[0.99] disabled:opacity-50">{s}</button>
+              ))}
             </div>
           )}
 
-          {/* Messages */}
           {msgs.map((m, i) => (
             <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed ${
-                  m.role === "user"
-                    ? "bg-primary text-primary-foreground rounded-br-sm"
-                    : "bg-card border border-border/60 rounded-bl-sm"
-                }`}
-              >
+              <div className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-card border border-border/60 rounded-bl-sm"}`}>
                 {m.text}
+                {m.role === "assistant" && m.source && <div className="mt-1.5 text-[10px] text-muted-foreground">{m.source === "phone" ? "Worked out on your phone" : "From your own AI · general information, not advice"}</div>}
               </div>
             </div>
           ))}
 
           {loading && (
             <div className="flex justify-start">
-              <div className="bg-card border border-border/60 rounded-2xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" />
-                <span>{t("coach.thinking")}</span>
-              </div>
+              <div className="bg-card border border-border/60 rounded-2xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-2 text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> Chiku is working it out…</div>
             </div>
           )}
-
           <div ref={bottomRef} />
         </div>
       </Screen>
@@ -410,16 +144,13 @@ ${JSON.stringify(context)}`;
           <input
             value={input}
             disabled={loading}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && !e.shiftKey && send(input)}
-            placeholder={t("coach.inputPlaceholder")}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send(input)}
+            placeholder="Ask about your money…"
+            aria-label="Ask Chiku about your money"
             className="flex-1 bg-transparent px-3 py-2 text-sm outline-none disabled:opacity-50"
           />
-          <button
-            onClick={() => send(input)}
-            disabled={loading || !input.trim()}
-            className="size-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-40 transition-opacity"
-          >
+          <button onClick={() => send(input)} disabled={loading || !input.trim()} aria-label="Send" className="size-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-40">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>
         </div>

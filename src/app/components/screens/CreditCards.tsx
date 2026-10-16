@@ -27,6 +27,8 @@ import { inr } from "../types";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { getMonthKey, getCurrentMonthKey } from "../../lib/dateUtils";
+import { cardDueWarning, type CardDueLevel } from "../../lib/cardDue";
+import { cardDueMonthKey } from "../../lib/obligations";
 
 // Color palettes for card skins
 const CARD_THEMES = [
@@ -648,6 +650,8 @@ function CardTile({
           </div>
         </div>
 
+        {isCredit && card.dueDate && <CardDueBanner card={card} />}
+
         {/* Notes / Perks */}
         {card.notes && (
           <div className="text-xs bg-indigo-50/50 border border-indigo-100 rounded-xl p-2.5 text-indigo-950 flex items-start gap-2">
@@ -765,6 +769,9 @@ function CardForm({
         creditLimit: draft.creditLimit ? Number(draft.creditLimit) : undefined,
         statementDate: draft.statementDate ? Number(draft.statementDate) : undefined,
         dueDate: draft.dueDate ? Number(draft.dueDate) : undefined,
+        statementDue: draft.statementDue ? Number(draft.statementDue) : undefined,
+        minDue: draft.statementDue && draft.minDue ? Number(draft.minDue) : undefined,
+        statementDueFor: draft.statementDue && draft.dueDate ? cardDueMonthKey(Number(draft.dueDate)) : undefined,
         annualFee: draft.annualFee ? Number(draft.annualFee) : 0,
         rewardRate: draft.rewardRate ? Number(draft.rewardRate) : undefined,
         notes: draft.notes ? draft.notes.trim() : undefined,
@@ -1053,6 +1060,30 @@ function CardForm({
                     className="rounded-xl"
                   />
                 </Field>
+
+                <Field label="Latest statement: total due (₹)">
+                  <Input
+                    min="0"
+                    type="number"
+                    inputMode="decimal"
+                    value={draft.statementDue || ""}
+                    onChange={(e) => change("statementDue", e.target.value)}
+                    placeholder="From your statement"
+                    className="rounded-xl"
+                  />
+                </Field>
+
+                <Field label="Latest statement: minimum due (₹)">
+                  <Input
+                    min="0"
+                    type="number"
+                    inputMode="decimal"
+                    value={draft.minDue || ""}
+                    onChange={(e) => change("minDue", e.target.value)}
+                    placeholder="Optional"
+                    className="rounded-xl"
+                  />
+                </Field>
               </div>
             </div>
           )}
@@ -1229,4 +1260,54 @@ function getOrdinal(n: number) {
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
   return s[(v - 20) % 10] || s[v] || s[0];
+}
+
+
+const LEVEL_STYLE: Record<CardDueLevel, { box: string; chip: string }> = {
+  info: { box: "bg-sky-50 border-sky-200 text-sky-950", chip: "bg-sky-100 text-sky-800" },
+  watch: { box: "bg-amber-50 border-amber-200 text-amber-950", chip: "bg-amber-100 text-amber-900" },
+  action: { box: "bg-rose-50 border-rose-200 text-rose-950", chip: "bg-rose-100 text-rose-800" },
+};
+
+/** One plain-language line per card: what is due, why it matters, and the single next step. Shown within 10 days of the due date. */
+function CardDueBanner({ card }: { card: CreditCard }) {
+  const { updateCreditCard } = useStore();
+  const now = new Date();
+  const due = nextDueDate(card.dueDate as number, now);
+  const daysLeft = Math.round((due.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) / 86400000);
+  if (daysLeft > 10) return null;
+  const monthKey = cardDueMonthKey(card.dueDate as number, now);
+  if (card.statementPaidFor === monthKey) return null;
+  const fresh = card.statementDueFor === monthKey;
+  const w = cardDueWarning({
+    daysLeft,
+    statementDue: fresh ? card.statementDue : undefined,
+    minDue: fresh ? card.minDue : undefined,
+    cardLabel: `${card.bankName} ••${card.last4Digits}`,
+  });
+  const st = LEVEL_STYLE[w.level];
+  return (
+    <div className={`ls-rise rounded-xl border p-3 space-y-1.5 ${st.box}`} role="status">
+      <div className="flex items-center gap-2">
+        <span className={`text-[10px] font-extrabold uppercase tracking-wide px-1.5 py-0.5 rounded ${st.chip}`}>{w.label}</span>
+        <span className="text-xs font-bold leading-snug">{w.title}</span>
+      </div>
+      <p className="text-[11px] leading-relaxed">{w.body}</p>
+      {w.primaryAction === "Mark paid" && (
+        <button
+          onClick={() => updateCreditCard({ ...card, statementPaidFor: monthKey })}
+          className="text-[11px] font-bold underline underline-offset-2"
+        >
+          Mark paid (hides this reminder; record the payment separately)
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Next calendar date this due day falls on, counting a bill still within 2 days past due as the current one. */
+function nextDueDate(day: number, now: Date): Date {
+  const d = new Date(now.getFullYear(), now.getMonth(), Math.min(day, 28));
+  if (d.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - 2 * 86400000) d.setMonth(d.getMonth() + 1);
+  return d;
 }

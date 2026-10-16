@@ -1,4 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { api } from "../../lib/api";
+import { alreadyRecorded, applyInstallment, buildInstallmentTx, currentInstallment, isPreEmi, preEmiAmount } from "../../lib/loanEngine";
 import { todayISO } from "../../lib/dateUtils";
 import {
   Plus, ArrowDownLeft, ArrowUpRight, Bell, Check, Trash2, X, Building2, Car,
@@ -8,6 +10,8 @@ import {
   Receipt, Percent, Sparkles, SlidersHorizontal, Info
 } from "lucide-react";
 import { Header, Screen } from "../Shell";
+import { EmiBurdenCard, EmiOutflow, PrepaymentSimulator } from "../EmiCommand";
+import { typicalMonthlyIncome, bnplBurden, BNPL_ALERT_PCT } from "../../lib/emiPlanner";
 import { inr } from "../types";
 import {
   Loan, PaymentMode, StructuredLoan, StructuredLoanType, BuilderMilestone,
@@ -23,6 +27,7 @@ const loanTypeConfig: Record<StructuredLoanType, { label: string; icon: typeof H
   education_loan:        { label: "Education Loan",        icon: GraduationCap,  color: "#059669" },
   property_registration: { label: "Property Registration", icon: Building2,      color: "#D97706" },
   builder_demand:        { label: "Builder Demand",        icon: Building2,      color: "#DC2626" },
+  bnpl:                  { label: "BNPL / Pay-later",      icon: CreditCard,     color: "#BE185D" },
   other:                 { label: "Other Loan",            icon: CreditCard,     color: "#64748B" },
 };
 
@@ -62,7 +67,8 @@ function getLoanActuals(loan: StructuredLoan, transactions: Tx[]) {
   const prepayTxs = loanTxs.filter((t) => t.loanPaymentType === "prepayment");
   const totalPrepaid = prepayTxs.reduce((s, t) => s + Math.abs(t.amount), 0);
   const emiTxs = loanTxs.filter((t) => t.loanPaymentType !== "prepayment");
-  const baseOutstanding = outstandingPrincipal(loan.principalAmount, loan.interestRatePA, loan.tenureMonths, loan.emisPaid);
+  // Pre-EMI repays no principal: what is owed is what the bank has disbursed so far.
+  const baseOutstanding = isPreEmi(loan) ? (loan.disbursedAmount ?? loan.outstandingPrincipal) : outstandingPrincipal(loan.principalAmount, loan.interestRatePA, loan.tenureMonths, loan.emisPaid);
   const adjustedOutstanding = Math.max(0, baseOutstanding - totalPrepaid);
   return { loanTxs, totalPaid, prepayTxs, totalPrepaid, emiTxs, adjustedOutstanding };
 }
@@ -95,7 +101,8 @@ export function Loans({ onBack }: { onBack: () => void }) {
     return s + adjustedOutstanding;
   }, 0);
 
-  const totalEmiMonthly = structuredLoans.filter(l => !l.closed).reduce((s, l) => s + l.emiAmount, 0);
+  const totalEmiMonthly = structuredLoans.filter(l => !l.closed).reduce((s, l) => s + currentInstallment(l).amount, 0);
+  const monthlyIncome = useMemo(() => typicalMonthlyIncome(transactions), [transactions]);
 
   const totalTrackedDebits = useMemo(() => {
     return transactions
@@ -116,17 +123,34 @@ export function Loans({ onBack }: { onBack: () => void }) {
 
           {/* Summary Cards */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="bg-gradient-to-br from-rose-500 to-rose-600 text-white rounded-2xl p-4 shadow-md shadow-rose-500/20">
-              <div className="text-xs font-semibold text-rose-100">Total Outstanding</div>
-              <div className="font-display text-xl font-black mt-1">{inr(totalOutstanding)}</div>
-              <div className="text-[11px] text-rose-100 mt-1">{structuredLoans.filter(l => !l.closed).length} active loans</div>
+            <div className="bg-card border border-rose-200 rounded-2xl p-4">
+              <div className="text-xs font-semibold text-rose-700">Total Outstanding</div>
+              <div className="font-display text-xl font-black mt-1 text-slate-900">{inr(totalOutstanding)}</div>
+              <div className="text-[11px] text-slate-500 mt-1">{structuredLoans.filter(l => !l.closed).length} active loans</div>
             </div>
-            <div className="bg-gradient-to-br from-amber-500 to-orange-600 text-white rounded-2xl p-4 shadow-md shadow-amber-500/20">
-              <div className="text-xs font-semibold text-amber-100">Monthly EMI Load</div>
-              <div className="font-display text-xl font-black mt-1">{inr(totalEmiMonthly)}</div>
-              <div className="text-[11px] text-amber-100 mt-1">across all loans</div>
+            <div className="bg-card border border-amber-200 rounded-2xl p-4">
+              <div className="text-xs font-semibold text-amber-700">Monthly EMI Load</div>
+              <div className="font-display text-xl font-black mt-1 text-slate-900">{inr(totalEmiMonthly)}</div>
+              <div className="text-[11px] text-slate-500 mt-1">across all loans</div>
             </div>
           </div>
+
+          {structuredLoans.some((l) => !l.closed) && (
+            <>
+              <EmiBurdenCard monthlyIncome={monthlyIncome} totalEmi={totalEmiMonthly} />
+              {(() => {
+                const b = bnplBurden(monthlyIncome, structuredLoans);
+                if (!b.hasAny) return null;
+                return (
+                  <div className={`rounded-2xl border p-3.5 text-xs leading-snug ${b.flagged ? "bg-rose-50 border-rose-200 text-rose-900" : "bg-pink-50 border-pink-200 text-pink-900"}`}>
+                    <div className="font-bold">Pay-later dues: {inr(b.monthly)} a month{b.ratioPct != null ? ` (${b.ratioPct.toFixed(0)}% of income)` : ""}</div>
+                    <div className="mt-1">{b.flagged ? `Above ${BNPL_ALERT_PCT}% of income. Pay-later is borrowing, and a missed due date adds fees and can hurt your credit record. Clear these first.` : "Pay-later counts as debt here, not as spending. Keep it under 10% of income."}</div>
+                  </div>
+                );
+              })()}
+              <EmiOutflow loans={structuredLoans} />
+            </>
+          )}
 
           {/* Tracked Ledger Outflow Bar */}
           {totalTrackedDebits > 0 && (
@@ -183,21 +207,17 @@ export function Loans({ onBack }: { onBack: () => void }) {
                     onOpenDetail={() => setDetailLoanId(loan.id)}
                     onOpenRevision={() => setRevisionLoanId(loan.id)}
                     onOpenLogEmi={() => setLogEmiLoanId(loan.id)}
-                    onPayEmi={() => {
-                      const updated: StructuredLoan = {
-                        ...loan,
-                        emisPaid: Math.min(loan.emisPaid + 1, loan.totalEmis),
-                        outstandingPrincipal: outstandingPrincipal(loan.principalAmount, loan.interestRatePA, loan.tenureMonths, loan.emisPaid + 1),
-                        nextEmiDueDate: (() => {
-                          const d = new Date(loan.nextEmiDueDate);
-                          d.setMonth(d.getMonth() + 1);
-                          return d.toISOString().slice(0, 10);
-                        })(),
-                        closed: loan.emisPaid + 1 >= loan.totalEmis,
-                      };
-                      updateStructuredLoan(updated);
+                    onPayEmi={async () => {
+                      const inst = currentInstallment(loan);
+                      const due = { dueDate: loan.nextEmiDueDate, ...inst };
+                      // the payment is an expense too — unless the auto-debit already recorded this due date
+                      if (!alreadyRecorded(transactions, loan.id, due.dueDate)) {
+                        await addTransaction(buildInstallmentTx(loan, due, { auto: false }));
+                      }
+                      await updateStructuredLoan(applyInstallment(loan, inst.kind));
                     }}
                     onRemove={() => removeStructuredLoan(loan.id)}
+                    onUpdate={updateStructuredLoan}
                   />
                 ))}
               </div>
@@ -365,25 +385,9 @@ export function Loans({ onBack }: { onBack: () => void }) {
           onSave={async (txData, isPrepayment, advanceDueDate) => {
             await addTransaction(txData);
             if (!isPrepayment) {
-              const updatedEmisPaid = Math.min(activeLogEmiLoan.emisPaid + 1, activeLogEmiLoan.totalEmis);
-              let nextDue = activeLogEmiLoan.nextEmiDueDate;
-              if (advanceDueDate) {
-                const d = new Date(activeLogEmiLoan.nextEmiDueDate || new Date());
-                d.setMonth(d.getMonth() + 1);
-                nextDue = d.toISOString().slice(0, 10);
-              }
-              await updateStructuredLoan({
-                ...activeLogEmiLoan,
-                emisPaid: updatedEmisPaid,
-                outstandingPrincipal: outstandingPrincipal(
-                  activeLogEmiLoan.principalAmount,
-                  activeLogEmiLoan.interestRatePA,
-                  activeLogEmiLoan.tenureMonths,
-                  updatedEmisPaid
-                ),
-                nextEmiDueDate: nextDue,
-                closed: updatedEmisPaid >= activeLogEmiLoan.totalEmis,
-              });
+              const kind = currentInstallment(activeLogEmiLoan).kind;
+              const next = applyInstallment(activeLogEmiLoan, kind);
+              await updateStructuredLoan(advanceDueDate ? next : { ...next, nextEmiDueDate: activeLogEmiLoan.nextEmiDueDate });
             }
             setLogEmiLoanId(null);
           }}
@@ -393,11 +397,51 @@ export function Loans({ onBack }: { onBack: () => void }) {
   );
 }
 
+// ===================== PRE-EMI / AUTO-DEBIT CONTROLS =====================
+function LoanPhaseControls({ loan, onUpdate }: { loan: StructuredLoan; onUpdate: (l: StructuredLoan) => void }) {
+  const [disbursed, setDisbursed] = useState(String(loan.disbursedAmount ?? ""));
+  if (loan.closed) return null;
+  const pre = isPreEmi(loan);
+  const amt = Math.min(Number(disbursed) || 0, loan.principalAmount);
+  return (
+    <div className="rounded-2xl border border-border p-3 space-y-3">
+      {pre && (
+        <div className="space-y-2">
+          <div className="text-xs font-bold">Pre-EMI · bank has released {inr(loan.disbursedAmount ?? 0)} of {inr(loan.principalAmount)}</div>
+          <div className="flex gap-2">
+            <input inputMode="decimal" value={disbursed} onChange={(e) => setDisbursed(e.target.value.replace(/[^0-9.]/g, ""))} className="flex-1 bg-muted/60 rounded-xl px-3 py-2 text-sm outline-none" placeholder="Total disbursed so far" />
+            <button
+              onClick={() => onUpdate({ ...loan, disbursedAmount: amt, outstandingPrincipal: amt })}
+              disabled={!amt || amt === loan.disbursedAmount}
+              className="px-3 rounded-xl bg-primary text-primary-foreground text-xs font-bold disabled:opacity-40"
+            >Update</button>
+          </div>
+          <div className="text-[11px] text-muted-foreground">New tranche → new Pre-EMI of <b>{inr(preEmiAmount(amt, loan.interestRatePA))}</b>/month from the next due date.</div>
+          <button
+            onClick={() => onUpdate({ ...loan, phase: "emi", disbursedAmount: undefined, outstandingPrincipal: loan.principalAmount })}
+            className="w-full text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl py-2"
+          >Fully disbursed — start full EMI ({inr(loan.emiAmount)}/mo)</button>
+        </div>
+      )}
+      <button onClick={() => onUpdate({ ...loan, autoDebit: !loan.autoDebit })} className="w-full flex items-center justify-between gap-3 text-left">
+        <div>
+          <div className="text-xs font-bold">Auto-debit {loan.autoDebit ? "on" : "off"}</div>
+          <div className="text-[11px] text-muted-foreground">{loan.autoDebit ? "Each instalment is recorded as an expense on its due date." : "Turn on to record instalments automatically."}</div>
+        </div>
+        <span className={`w-10 h-6 rounded-full p-0.5 transition-colors shrink-0 ${loan.autoDebit ? "bg-primary" : "bg-slate-300"}`}>
+          <span className={`block size-5 rounded-full bg-white transition-transform ${loan.autoDebit ? "translate-x-4" : ""}`} />
+        </span>
+      </button>
+    </div>
+  );
+}
+
 // ===================== STRUCTURED LOAN CARD =====================
 function StructuredLoanCard({
-  loan, properties, transactions, expanded, onToggle, onOpenDetail, onOpenRevision, onOpenLogEmi, onPayEmi, onRemove
+  loan, properties, transactions, expanded, onToggle, onOpenDetail, onOpenRevision, onOpenLogEmi, onPayEmi, onRemove, onUpdate
 }: {
   loan: StructuredLoan;
+  onUpdate: (l: StructuredLoan) => void;
   properties: any[];
   transactions: Tx[];
   expanded: boolean;
@@ -415,6 +459,8 @@ function StructuredLoanCard({
   const progress = ((loan.emisPaid / loan.totalEmis) * 100);
   const interestFY = annualInterestPaid(loan.emiAmount, loan.principalAmount, loan.emisPaid, loan.tenureMonths, loan.interestRatePA);
   const emisLeft = loan.totalEmis - loan.emisPaid;
+  const preEmi = isPreEmi(loan);
+  const inst = currentInstallment(loan);
   const nextDue = loan.nextEmiDueDate;
   const daysUntilEmi = Math.ceil((new Date(nextDue).getTime() - Date.now()) / 86400000);
   const isUrgent = daysUntilEmi <= 5 && !loan.closed;
@@ -430,6 +476,12 @@ function StructuredLoanCard({
           <div className="text-xs text-muted-foreground truncate">
             {cfg.label}{linkedProp ? ` · 🏠 ${linkedProp.name}` : ""} · <span className="font-semibold text-slate-700">{loan.interestRatePA}% p.a.</span>
           </div>
+          {(preEmi || loan.autoDebit) && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {preEmi && <span className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">PRE-EMI · interest only</span>}
+              {loan.autoDebit && <span className="text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">Auto-debit on</span>}
+            </div>
+          )}
           {loanTxs.length > 0 && (
             <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60 mt-1">
               <CheckCircle2 className="size-3 shrink-0" />
@@ -439,7 +491,7 @@ function StructuredLoanCard({
         </div>
         <div className="text-right mr-1 shrink-0">
           <div className="font-bold text-sm text-slate-900">{inr(adjustedOutstanding)}</div>
-          <div className="text-[11px] text-muted-foreground">{emisLeft} EMIs left</div>
+          <div className="text-[11px] text-muted-foreground">{preEmi ? "Pre-EMI phase" : `${emisLeft} EMIs left`}</div>
         </div>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground flex-shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground flex-shrink-0" />}
       </button>
@@ -447,8 +499,8 @@ function StructuredLoanCard({
       {/* Progress bar */}
       <div className="px-4 pb-3">
         <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
-          <span>{loan.emisPaid} of {loan.totalEmis} EMIs ({loan.tenureMonths} mo)</span>
-          <span>{progress.toFixed(0)}% amortized</span>
+          <span>{preEmi ? `Pre-EMI paid so far: ${inr(loan.preEmiPaidTotal ?? 0)}` : `${loan.emisPaid} of ${loan.totalEmis} EMIs (${loan.tenureMonths} mo)`}</span>
+          <span>{preEmi ? `${inr(loan.disbursedAmount ?? 0)} of ${inr(loan.principalAmount)} disbursed` : `${progress.toFixed(0)}% amortized`}</span>
         </div>
         <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: cfg.color }} />
@@ -460,7 +512,7 @@ function StructuredLoanCard({
         <div className="mx-4 mb-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertTriangle className="size-3.5 text-amber-600 flex-shrink-0" />
-            <span className="text-xs font-semibold text-amber-800">EMI {inr(loan.emiAmount)} due in {daysUntilEmi} day{daysUntilEmi !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-semibold text-amber-800">{preEmi ? "Pre-EMI" : "EMI"} {inr(inst.amount)} due in {daysUntilEmi} day{daysUntilEmi !== 1 ? "s" : ""}</span>
           </div>
           <button
             onClick={(e) => { e.stopPropagation(); onOpenLogEmi(); }}
@@ -476,13 +528,15 @@ function StructuredLoanCard({
         <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
           {/* Amortization summary */}
           <div className="grid grid-cols-2 gap-2">
-            <StatBox label="Current EMI" value={inr(loan.emiAmount)} note={`Due on ${nextDue}`} />
+            <StatBox label={preEmi ? "Pre-EMI (interest)" : "Current EMI"} value={inr(inst.amount)} note={preEmi ? `Full EMI ${inr(loan.emiAmount)} later · due ${nextDue}` : `Due on ${nextDue}`} />
             <StatBox label="Interest Rate" value={`${loan.interestRatePA}% p.a.`} note={loan.emiHistory && loan.emiHistory.length > 1 ? `${loan.emiHistory.length} revisions logged` : undefined} />
             <StatBox label="Principal Sanctioned" value={inr(loan.principalAmount)} />
             <StatBox label="Current Outstanding" value={inr(adjustedOutstanding)} color="rose" />
             <StatBox label="Total Interest" value={inr(totalInterest(loan.emiAmount, loan.tenureMonths, loan.principalAmount))} />
             <StatBox label="Annual Interest (u/s 24b)" value={inr(interestFY)} color="green" note="ITR Eligible" />
           </div>
+
+          <LoanPhaseControls loan={loan} onUpdate={onUpdate} />
 
           {/* Linked Property Banner if Home Loan */}
           {linkedProp && (
@@ -635,6 +689,8 @@ function LoanDetailModal({
             <span>Next Due: {loan.nextEmiDueDate}</span>
           </div>
         </div>
+
+        {!loan.closed && !isPreEmi(loan) && <PrepaymentSimulator loan={loan} balance={adjustedOutstanding} />}
 
         {/* Quick Action Buttons */}
         <div className="flex gap-2">
@@ -988,8 +1044,9 @@ function LogEmiDebitSheet({
   onSave: (tx: Omit<Tx, "id">, isPrepayment: boolean, advanceDueDate: boolean) => Promise<void>;
 }) {
   const [paymentType, setPaymentType] = useState<"emi" | "prepayment">("emi");
-  const [amount, setAmount] = useState(String(loan.emiAmount));
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const inst = currentInstallment(loan);
+  const [amount, setAmount] = useState(String(inst.amount));
+  const [date, setDate] = useState(() => todayISO());
   const [mode, setMode] = useState<PaymentMode>("debit");
   const [advanceDueDate, setAdvanceDueDate] = useState(true);
   const [notes, setNotes] = useState(`Auto-debited for ${loan.lenderName}`);
@@ -1005,7 +1062,7 @@ function LogEmiDebitSheet({
       await onSave(
         {
           date,
-          title: `${loan.lenderName} ${isPrepay ? "Pre-payment" : "EMI"}`,
+          title: `${loan.lenderName} ${isPrepay ? "Pre-payment" : inst.kind === "pre_emi" ? "Pre-EMI (interest only)" : "EMI"}`,
           merchant: loan.lenderName,
           amount: -Math.abs(amt),
           type: "expense",
@@ -1013,7 +1070,8 @@ function LogEmiDebitSheet({
           payments: [{ mode, amount: Math.abs(amt) }],
           notes: notes ? notes.trim() : undefined,
           loanId: loan.id,
-          loanPaymentType: paymentType,
+          loanPaymentType: isPrepay ? "prepayment" : inst.kind,
+          accountId: loan.autoDebitBankAccountId || undefined,
         },
         isPrepay,
         advanceDueDate
@@ -1045,13 +1103,13 @@ function LogEmiDebitSheet({
           <button
             onClick={() => {
               setPaymentType("emi");
-              setAmount(String(loan.emiAmount));
+              setAmount(String(inst.amount));
             }}
             className={`flex-1 py-2 rounded-lg text-xs font-bold transition ${
               paymentType === "emi" ? "bg-card shadow-sm text-slate-900" : "text-muted-foreground"
             }`}
           >
-            Regular EMI ({inr(loan.emiAmount)})
+            {inst.kind === "pre_emi" ? "Pre-EMI" : "Regular EMI"} ({inr(inst.amount)})
           </button>
           <button
             onClick={() => {
@@ -1071,7 +1129,7 @@ function LogEmiDebitSheet({
             inputMode="decimal"
             value={amount}
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-            placeholder={isPrepay ? "Enter lump-sum amount (e.g. 100000)" : String(loan.emiAmount)}
+            placeholder={isPrepay ? "Enter lump-sum amount (e.g. 100000)" : String(inst.amount)}
             className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none font-bold"
           />
         </Label>
@@ -1125,7 +1183,7 @@ function LogEmiDebitSheet({
           disabled={!amount || saving}
           className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl py-3.5 text-sm shadow-sm active:scale-[0.98] transition disabled:opacity-50"
         >
-          {saving ? "Logging Debit…" : isPrepay ? "Log Part Pre-payment" : `Log EMI Debit (${inr(Number(amount) || loan.emiAmount)})`}
+          {saving ? "Logging Debit…" : isPrepay ? "Log Part Pre-payment" : `Log ${inst.kind === "pre_emi" ? "Pre-EMI" : "EMI"} Debit (${inr(Number(amount) || inst.amount)})`}
         </button>
       </div>
     </div>
@@ -1152,6 +1210,13 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [milestones, setMilestones] = useState<BuilderMilestone[]>([]);
+  const [underConstruction, setUnderConstruction] = useState(false);
+  const [disbursed, setDisbursed] = useState("");
+  const [fullEmiStart, setFullEmiStart] = useState("");
+  const [autoDebit, setAutoDebit] = useState(false);
+  const [accountId, setAccountId] = useState("");
+  const [accounts, setAccounts] = useState<Array<{ id: string; bank: string; maskedNumber?: string; accountType?: string }>>([]);
+  useEffect(() => { api.list<any>("accounts").then((a) => setAccounts(a.filter((x) => x.accountType !== "Credit Card"))).catch(() => {}); }, []);
 
   const p = Number(principal) || 0;
   const r = Number(ratePA) || 0;
@@ -1160,6 +1225,10 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
   const totalInt = p > 0 ? totalInterest(emi, t, p) : 0;
 
   const isBuilderOrReg = loanType === "builder_demand" || loanType === "property_registration";
+  const canPreEmi = loanType === "home_loan" || loanType === "builder_demand";
+  const preEmiOn = canPreEmi && underConstruction;
+  const disbursedAmt = Math.min(Number(disbursed) || 0, p);
+  const preEmiMonthly = preEmiAmount(disbursedAmt, r);
 
   const submit = async () => {
     if (!lenderName.trim() || !principal || saving) return;
@@ -1170,14 +1239,21 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
         lenderName: lenderName.trim(),
         linkedPropertyId: linkedPropertyId || undefined,
         principalAmount: p,
-        outstandingPrincipal: outstandingPrincipal(p, r, t, Number(emisPaid)),
+        outstandingPrincipal: preEmiOn ? disbursedAmt : outstandingPrincipal(p, r, t, Number(emisPaid)),
         interestRatePA: r,
         tenureMonths: t,
         emiAmount: emi,
         disbursementDate,
         nextEmiDueDate,
-        emisPaid: Number(emisPaid),
+        emisPaid: preEmiOn ? 0 : Number(emisPaid),
         totalEmis: t,
+        phase: preEmiOn ? "pre_emi" : "emi",
+        disbursedAmount: preEmiOn ? disbursedAmt : undefined,
+        fullEmiStartDate: preEmiOn && fullEmiStart ? fullEmiStart : undefined,
+        preEmiPaidTotal: preEmiOn ? 0 : undefined,
+        emiDay: Number(nextEmiDueDate.slice(8, 10)) || undefined,
+        autoDebit,
+        autoDebitBankAccountId: autoDebit && accountId ? accountId : undefined,
         isRegistrationLoan: loanType === "property_registration",
         builderMilestones: milestones.length > 0 ? milestones : undefined,
         emiHistory: [
@@ -1257,6 +1333,59 @@ function AddStructuredLoanSheet({ onClose, onSave, properties }: {
           <Label label="EMIs Already Paid">
             <input inputMode="numeric" value={emisPaid} onChange={e => setEmisPaid(e.target.value)} className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none" />
           </Label>
+        </div>
+
+        {/* Pre-EMI: under-construction homes pay interest only on what the bank has released so far */}
+        {canPreEmi && (
+          <div className="rounded-2xl border border-border p-3.5 space-y-3">
+            <button type="button" onClick={() => setUnderConstruction(v => !v)} className="w-full flex items-center justify-between gap-3 text-left">
+              <div>
+                <div className="text-sm font-bold">Under construction? (Pre-EMI)</div>
+                <div className="text-[11px] text-muted-foreground">Bank is releasing the loan in stages — you pay interest only until the full EMI starts.</div>
+              </div>
+              <span className={`w-11 h-6 rounded-full p-0.5 transition-colors shrink-0 ${underConstruction ? "bg-primary" : "bg-slate-300"}`}>
+                <span className={`block size-5 rounded-full bg-white transition-transform ${underConstruction ? "translate-x-5" : ""}`} />
+              </span>
+            </button>
+            {underConstruction && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Label label="Disbursed so far (₹)">
+                    <input inputMode="decimal" value={disbursed} onChange={e => setDisbursed(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="e.g. 1000000" className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none" />
+                  </Label>
+                  <Label label="Full EMI starts (approx.)">
+                    <input type="date" value={fullEmiStart} onChange={e => setFullEmiStart(e.target.value)} className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none" />
+                  </Label>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 space-y-1">
+                  <div><b>Pre-EMI now: {inr(preEmiMonthly)}/month</b> = ₹{inr(disbursedAmt).replace("₹", "")} × {r}% ÷ 12</div>
+                  <div>Interest only — your loan balance and "EMIs paid" do not change. Full EMI later: <b>{inr(emi)}</b>/month. Update "Disbursed so far" whenever the bank releases the next tranche.</div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Auto-debit */}
+        <div className="rounded-2xl border border-border p-3.5 space-y-3">
+          <button type="button" onClick={() => setAutoDebit(v => !v)} className="w-full flex items-center justify-between gap-3 text-left">
+            <div>
+              <div className="text-sm font-bold">Auto-debit from my bank</div>
+              <div className="text-[11px] text-muted-foreground">Your bank pulls the instalment on the due date. LiveSync records it automatically as an expense so your spending stays accurate.</div>
+            </div>
+            <span className={`w-11 h-6 rounded-full p-0.5 transition-colors shrink-0 ${autoDebit ? "bg-primary" : "bg-slate-300"}`}>
+              <span className={`block size-5 rounded-full bg-white transition-transform ${autoDebit ? "translate-x-5" : ""}`} />
+            </span>
+          </button>
+          {autoDebit && (
+            <Label label="Debited from account">
+              <select value={accountId} onChange={e => setAccountId(e.target.value)} className="w-full bg-muted/60 rounded-xl px-3.5 py-2.5 text-sm outline-none">
+                <option value="">{accounts.length ? "Select account (optional)" : "No accounts added yet — recorded without an account"}</option>
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.bank}{a.maskedNumber ? ` ${a.maskedNumber}` : ""}</option>)}
+              </select>
+            </Label>
+          )}
+          {autoDebit && <p className="text-[11px] text-muted-foreground">Make sure the mandate (NACH/e-mandate) is active with your bank — the app records the debit, it cannot move money itself.</p>}
         </div>
 
         {/* Auto-calculated EMI */}

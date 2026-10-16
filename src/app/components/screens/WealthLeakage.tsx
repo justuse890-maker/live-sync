@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { Header, Screen } from "../Shell";
 import { useStore } from "../../store";
 import { inr } from "../types";
+import { useLeakFixes } from "../../lib/useLeakFixes";
+import { applyFixes, canMarkFixed, markFixed, unmarkFixed } from "../../lib/leakSavings";
 import { detectLeaks, opportunityCost, type Leak } from "../../lib/intelligence";
 import { PremiumLock } from "../PremiumLock";
 
@@ -38,10 +40,12 @@ const sevColor: Record<Leak["severity"], string> = {
 
 export function WealthLeakage({ onBack, onUpgrade }: { onBack: () => void; onUpgrade?: () => void }) {
   const { transactions, subscriptions, assets, liabilities, addSubscription } = useStore();
-  const { leaks, totalAnnual } = useMemo(
+  const detected = useMemo(
     () => detectLeaks(transactions, subscriptions, assets, liabilities),
     [transactions, subscriptions, assets, liabilities],
   );
+  const { fixes, save: saveFixes } = useLeakFixes();
+  const { open: leaks, fixed, savedAnnual, savedMonthly, openAnnual: totalAnnual } = useMemo(() => applyFixes(detected.leaks, fixes), [detected, fixes]);
   const tenYearCost = opportunityCost(totalAnnual, 10);
   const [showHow, setShowHow] = useState(false);
 
@@ -79,6 +83,26 @@ export function WealthLeakage({ onBack, onUpgrade }: { onBack: () => void; onUpg
               <Stat label="Categories" value={Object.keys(grouped).length.toString()} />
             </div>
           </div>
+
+          {/* Money already won back */}
+          {fixed.length > 0 && (
+            <div className="rounded-2xl bg-card border border-emerald-200 p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-wider text-emerald-700">Saved so far</div>
+                <div className="text-sm font-black text-emerald-700">{inr(Math.round(savedAnnual))}/yr · {inr(Math.round(savedMonthly))}/mo</div>
+              </div>
+              {fixed.map((f) => (
+                <div key={f.id} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate text-slate-700">{f.title}</span>
+                  <span className="flex items-center gap-2 shrink-0">
+                    <b className="text-emerald-700">{inr(f.annual)}/yr</b>
+                    <button onClick={() => saveFixes(unmarkFixed(fixes, f.id))} className="text-[11px] text-muted-foreground underline">Undo</button>
+                  </span>
+                </div>
+              ))}
+              <div className="text-[10px] text-muted-foreground">Counted only for subscriptions you cancelled or dropped — recurring costs you no longer pay.</div>
+            </div>
+          )}
 
           {/* How it works */}
           <button
@@ -167,6 +191,15 @@ export function WealthLeakage({ onBack, onUpgrade }: { onBack: () => void; onUpg
                             <span className="text-xs text-muted-foreground">10-yr cost: {inr(Math.round(opportunityCost(l.annual, 10)))}</span>
                           </div>
                           <div className="text-xs text-foreground/80 mt-2 leading-relaxed">{l.tip}</div>
+                          {canMarkFixed(l.id) && (
+                            <button
+                              onClick={() => saveFixes(markFixed(fixes, l))}
+                              className="mt-3 mr-2 rounded-lg bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 text-[11px] text-emerald-800"
+                              style={{ fontWeight: 700 }}
+                            >
+                              I’ve cancelled / dropped it
+                            </button>
+                          )}
                           {l.category === "Recurring" && (
                             <button
                               onClick={() => addSubscription({ name: l.title.replace(" appears to recur monthly", ""), cost: Math.round(l.annual / 12), renewal: "", category: "Detected", status: "active", icon: "repeat", period: "monthly" })}

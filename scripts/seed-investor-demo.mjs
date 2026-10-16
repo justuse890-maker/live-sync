@@ -5,10 +5,11 @@
  * Run: node scripts/seed-investor-demo.mjs
  * Never change this script to use a real customer or employee account.
  */
-const projectId = process.env.VITE_SUPABASE_PROJECT_ID ?? "pnfdefqxkpnglbyzeqid";
-const anonKey = process.env.VITE_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBuZmRlZnF4a3BuZ2xieXplcWlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA3MTE5OTIsImV4cCI6MjA5NjI4Nzk5Mn0.czCMGNhHxwOuecf2ZUlRFG-vWqCG8DTrRtsN4GnHrNc";
-const email = process.env.VITE_DEMO_EMAIL ?? "investor.demo@livesync.example";
-const password = process.env.VITE_DEMO_PASSWORD ?? "LiveSyncDemo2026!";
+const { VITE_SUPABASE_PROJECT_ID: projectId, VITE_SUPABASE_ANON_KEY: anonKey, VITE_DEMO_EMAIL: email, VITE_DEMO_PASSWORD: password } = process.env;
+if (!projectId || !anonKey || !email || !password) {
+  console.error("Set VITE_SUPABASE_PROJECT_ID, VITE_SUPABASE_ANON_KEY, VITE_DEMO_EMAIL and VITE_DEMO_PASSWORD (e.g. `node --env-file=.env --env-file=.env.investor-demo scripts/seed-investor-demo.mjs`).");
+  process.exit(1);
+}
 const base = `https://${projectId}.supabase.co/functions/v1/make-server-a3fe149f`;
 
 async function json(url, init = {}) {

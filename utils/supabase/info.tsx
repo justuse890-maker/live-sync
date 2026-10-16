@@ -4,9 +4,14 @@
  * Never put the service_role key here or in .env — keep it server-only.
  */
 
-export const projectId: string =
-  import.meta.env.VITE_SUPABASE_PROJECT_ID ?? "pnfdefqxkpnglbyzeqid";
+// Fallbacks are tolerated in dev only; a production build with missing config must fail
+// loudly instead of silently talking to whichever project the fallback names.
+const requireEnv = (name: string, value: string | undefined): string => {
+  if (value) return value;
+  if (import.meta.env.PROD) throw new Error(`Missing required build-time config: ${name}`);
+  return "";
+};
 
-export const publicAnonKey: string =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ??
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBuZmRlZnF4a3BuZ2xieXplcWlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA3MTE5OTIsImV4cCI6MjA5NjI4Nzk5Mn0.czCMGNhHxwOuecf2ZUlRFG-vWqCG8DTrRtsN4GnHrNc";
+export const projectId: string = requireEnv("VITE_SUPABASE_PROJECT_ID", import.meta.env.VITE_SUPABASE_PROJECT_ID);
+
+export const publicAnonKey: string = requireEnv("VITE_SUPABASE_ANON_KEY", import.meta.env.VITE_SUPABASE_ANON_KEY);

@@ -3,9 +3,24 @@ import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import * as kv from "./kv_store.ts";
+import {
+  clampString, createRateLimiter, DOCUMENT_EXT_BY_MIME, evaluateSelfServePlanChange, isAcceptablePassword,
+  isAdminEmailListed, isOwnedStoragePath, isPlainObject, isValidEmail, isValidFeatureKey, isValidRecordId,
+  matchesMagicBytes, withinRecordLimit,
+} from "./guards.ts";
 
 const app = new Hono();
 app.use("*", logger(console.log));
+// API responses are JSON for a single authenticated user: never cache or sniff them.
+app.use("*", async (c, next) => {
+  await next();
+  c.header("Cache-Control", "no-store");
+  c.header("X-Content-Type-Options", "nosniff");
+});
+app.onError((err, c) => {
+  console.log("Unhandled error:", err);
+  return c.json({ error: "Internal server error" }, 500);
+});
 // Keep browser access limited to known first-party origins. Add any production
 // web domain to ALLOWED_ORIGINS before deploying a new frontend domain.
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "https://livesync.app,https://www.livesync.app,http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1,capacitor://localhost")
@@ -26,7 +41,16 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
+const ADMIN_EMAILS = (Deno.env.get("ADMIN_EMAILS") || "")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+// Accounts (e.g. the shared investor-demo login) that must never be deleted through the API.
+const PROTECTED_ACCOUNT_EMAILS = (Deno.env.get("PROTECTED_ACCOUNT_EMAILS") || "")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+// Until a payment provider is integrated, paid plans can only be self-assigned when this is explicitly enabled.
+const ALLOW_UNPAID_UPGRADES = Deno.env.get("ALLOW_UNPAID_UPGRADES") === "true";
+
 const DOC_BUCKET = "make-a3fe149f-documents";
+const MAX_DOCUMENTS_PER_USER = 200;
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const ALLOWED_DOCUMENT_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
 
@@ -43,7 +67,7 @@ const ALLOWED_DOCUMENT_TYPES = new Set(["application/pdf", "image/jpeg", "image/
   }
 })();
 
-async function requireUser(c: any): Promise<string | null> {
+async function requireUserDetail(c: any): Promise<{ id: string; email: string | null } | null> {
   const token = c.req.header("Authorization")?.split(" ")[1];
   if (!token) return null;
   const { data, error } = await supabase.auth.getUser(token);
@@ -51,20 +75,55 @@ async function requireUser(c: any): Promise<string | null> {
     console.log("Auth resolution error:", error?.message);
     return null;
   }
-  return data.user.id;
+  return { id: data.user.id, email: data.user.email ?? null };
 }
+
+async function requireUser(c: any): Promise<string | null> {
+  return (await requireUserDetail(c))?.id ?? null;
+}
+
+const KV_TABLE = "kv_store_a3fe149f";
+
+/** Delete every KV row whose key starts with `prefix`. */
+async function delByPrefix(prefix: string): Promise<void> {
+  const { error } = await supabase.from(KV_TABLE).delete().like("key", prefix + "%");
+  if (error) throw new Error(error.message);
+}
+
+/** Page through auth users (the admin API caps a page at 1000). */
+async function listAllUsers(maxPages = 20): Promise<any[]> {
+  const all: any[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw new Error(error.message);
+    const batch = data?.users ?? [];
+    all.push(...batch);
+    if (batch.length < 1000) break;
+  }
+  return all;
+}
+
+const clientIp = (c: any) => (c.req.header("x-forwarded-for") || "unknown").split(",")[0].trim();
+const signupLimiter = createRateLimiter(10, 60 * 60 * 1000);
+const bootstrapLimiter = createRateLimiter(5, 60 * 60 * 1000);
+const trackLimiter = createRateLimiter(120, 60 * 1000);
 
 app.get("/make-server-a3fe149f/health", (c) => c.json({ status: "ok" }));
 
 // --- Auth ---
 app.post("/make-server-a3fe149f/signup", async (c) => {
   try {
+    if (!signupLimiter(clientIp(c))) return c.json({ error: "Too many sign-up attempts. Try again later." }, 429);
     const { email, password, name } = await c.req.json();
-    if (!email || !password) return c.json({ error: "Missing email or password" }, 400);
+    if (!isValidEmail(email) || !password) return c.json({ error: "Missing or invalid email or password" }, 400);
+    if (!isAcceptablePassword(password)) return c.json({ error: "Password must be between 8 and 128 characters" }, 400);
+    // Admin addresses are only ever created through /admin/bootstrap; an auto-confirmed
+    // public sign-up with an admin address would otherwise grant admin access.
+    if (isAdminEmailListed(email, ADMIN_EMAILS)) return c.json({ error: "This email cannot be used for sign-up" }, 403);
     const { data, error } = await supabase.auth.admin.createUser({
       email,
       password,
-      user_metadata: { name },
+      user_metadata: { name: clampString(name, 100) },
       // Auto-confirm because no email server is configured in this environment.
       email_confirm: true,
     });
@@ -72,10 +131,10 @@ app.post("/make-server-a3fe149f/signup", async (c) => {
       console.log("Signup user-creation error:", error.message);
       return c.json({ error: error.message }, 400);
     }
-    return c.json({ user: data.user });
+    return c.json({ user: { id: data.user.id, email: data.user.email } });
   } catch (e) {
     console.log("Signup exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -83,31 +142,28 @@ app.post("/make-server-a3fe149f/signup", async (c) => {
 // or starts with admin@, or (b) no admin user exists yet.
 app.post("/make-server-a3fe149f/admin/bootstrap", async (c) => {
   try {
+    if (!bootstrapLimiter(clientIp(c))) return c.json({ error: "Too many attempts. Try again later." }, 429);
     const { email, password, name } = await c.req.json();
-    if (!email || !password) return c.json({ error: "Missing email or password" }, 400);
-    const lower = email.toLowerCase();
-    const ADMIN_EMAILS = (Deno.env.get("ADMIN_EMAILS") || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-    
-    // Strictly require that the email is explicitly listed in ADMIN_EMAILS environment variable
-    const allowed = ADMIN_EMAILS.includes(lower);
-    if (!allowed) {
-      return c.json({ error: "Unauthorized. Email is not listed in ADMIN_EMAILS environment variable." }, 403);
-    }
+    if (!isValidEmail(email) || !isAcceptablePassword(password)) return c.json({ error: "Invalid email or password" }, 400);
+
+    // Strictly require that the email is explicitly listed in the ADMIN_EMAILS environment variable.
+    // The response does not reveal why a request was refused.
+    if (!isAdminEmailListed(email, ADMIN_EMAILS)) return c.json({ error: "Forbidden" }, 403);
 
     const { data, error } = await supabase.auth.admin.createUser({
       email,
       password,
-      user_metadata: { name: name || "Admin", role: "admin" },
+      user_metadata: { name: clampString(name, 100) || "Admin" },
       email_confirm: true,
     });
     if (error) {
       console.log("Admin bootstrap error:", error.message);
       return c.json({ error: error.message }, 400);
     }
-    return c.json({ user: data.user });
+    return c.json({ user: { id: data.user.id, email: data.user.email } });
   } catch (e) {
     console.log("Admin bootstrap exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -129,7 +185,7 @@ for (const col of collections) {
       return c.json({ items });
     } catch (e) {
       console.log(`List ${col} failed for user ${userId}:`, e);
-      return c.json({ error: String(e) }, 500);
+      return c.json({ error: "Internal server error" }, 500);
     }
   });
 
@@ -138,7 +194,10 @@ for (const col of collections) {
     if (!userId) return c.json({ error: "Unauthorized" }, 401);
     try {
       const body = await c.req.json();
-      const id = body.id ?? crypto.randomUUID();
+      if (!isPlainObject(body)) return c.json({ error: "Body must be a JSON object" }, 400);
+      if (body.id != null && !isValidRecordId(body.id)) return c.json({ error: "Invalid id" }, 400);
+      if (!withinRecordLimit(body)) return c.json({ error: "Record is too large" }, 413);
+      const id = (body.id as string | undefined) ?? crypto.randomUUID();
       const now = new Date().toISOString();
       const existing = body.id ? await kv.get(keyFor(userId, col, id)) : null;
 
@@ -158,11 +217,16 @@ for (const col of collections) {
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
+      // Storage paths are server-owned: only /documents/upload may set one. Accepting a
+      // client-supplied path would let a user sign or delete another user's file.
+      if (col === "documents") {
+        if (existing?.path) item.path = existing.path; else delete (item as any).path;
+      }
       await kv.set(keyFor(userId, col, id), item);
       return c.json({ item });
     } catch (e) {
       console.log(`Write ${col} failed for user ${userId}:`, e);
-      return c.json({ error: String(e) }, 500);
+      return c.json({ error: "Internal server error" }, 500);
     }
   });
 
@@ -182,7 +246,7 @@ for (const col of collections) {
       }
       if (col === "documents") {
         const existing = await kv.get(keyFor(userId, col, id));
-        if (existing?.path) {
+        if (isOwnedStoragePath(userId, existing?.path)) {
           await supabase.storage.from(DOC_BUCKET).remove([existing.path]);
         }
       }
@@ -190,7 +254,7 @@ for (const col of collections) {
       return c.json({ ok: true });
     } catch (e) {
       console.log(`Delete ${col} failed for user ${userId}:`, e);
-      return c.json({ error: String(e) }, 500);
+      return c.json({ error: "Internal server error" }, 500);
     }
   });
 }
@@ -202,24 +266,33 @@ app.post("/make-server-a3fe149f/documents/upload", async (c) => {
   try {
     const form = await c.req.formData();
     const file = form.get("file") as File | null;
-    const category = (form.get("category") as string) || "Other";
-    const name = (form.get("name") as string) || file?.name || "Untitled";
-    const expiry = (form.get("expiry") as string) || "";
+    const category = clampString(form.get("category"), 80) || "Other";
+    const name = clampString(form.get("name"), 200) || clampString(file?.name, 200) || "Untitled";
+    const expiry = clampString(form.get("expiry"), 40);
     if (!file) return c.json({ error: "No file provided" }, 400);
     if (!ALLOWED_DOCUMENT_TYPES.has(file.type)) return c.json({ error: "Unsupported file type. Upload a PDF, JPG, PNG, or WebP file." }, 400);
     if (file.size > MAX_DOCUMENT_BYTES) return c.json({ error: "File is too large. Maximum size is 25 MB." }, 400);
 
+    const existingDocs = await kv.getByPrefix(keyFor(userId, "documents"));
+    if (existingDocs.length >= MAX_DOCUMENTS_PER_USER) {
+      return c.json({ error: `Document limit reached (${MAX_DOCUMENTS_PER_USER}). Delete some documents first.` }, 429);
+    }
+
     const id = crypto.randomUUID();
-    const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+    // Extension comes from the validated MIME type, never from the client-supplied file name.
+    const ext = DOCUMENT_EXT_BY_MIME[file.type];
     const path = `${userId}/${id}.${ext}`;
     const arrayBuf = await file.arrayBuffer();
+    if (!matchesMagicBytes(file.type, new Uint8Array(arrayBuf, 0, Math.min(16, arrayBuf.byteLength)))) {
+      return c.json({ error: "File content does not match its declared type." }, 400);
+    }
 
     const { error: upErr } = await supabase.storage
       .from(DOC_BUCKET)
       .upload(path, new Uint8Array(arrayBuf), { contentType: file.type, upsert: false });
     if (upErr) {
       console.log(`Document upload failed for user ${userId}:`, upErr.message);
-      return c.json({ error: upErr.message }, 500);
+      return c.json({ error: "Upload failed" }, 500);
     }
 
     const now = new Date().toISOString();
@@ -240,7 +313,7 @@ app.post("/make-server-a3fe149f/documents/upload", async (c) => {
     return c.json({ item });
   } catch (e) {
     console.log("Document upload exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -249,42 +322,52 @@ app.get("/make-server-a3fe149f/documents/:id/url", async (c) => {
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   try {
     const doc = await kv.get(keyFor(userId, "documents", c.req.param("id")));
-    if (!doc) return c.json({ error: "Not found" }, 404);
+    if (!doc || !isOwnedStoragePath(userId, doc.path)) return c.json({ error: "Not found" }, 404);
     const { data, error } = await supabase.storage.from(DOC_BUCKET).createSignedUrl(doc.path, 60);
     if (error) {
       console.log(`Signed-url generation failed for doc ${doc.id}:`, error.message);
-      return c.json({ error: error.message }, 500);
+      return c.json({ error: "Could not create download link" }, 500);
     }
     return c.json({ url: data.signedUrl });
   } catch (e) {
     console.log("Signed-url exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
 // --- Account deletion (right-to-erasure / DPDP) ---
 app.post("/make-server-a3fe149f/me/delete", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  const user = await requireUserDetail(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const userId = user.id;
+  if (user.email && PROTECTED_ACCOUNT_EMAILS.includes(user.email.toLowerCase())) {
+    return c.json({ error: "This account cannot be deleted." }, 403);
+  }
   try {
-    for (const col of collections) {
-      const items = await kv.getByPrefix(keyFor(userId, col));
-      for (const i of items) {
-        if (col === "documents" && i.path) {
-          await supabase.storage.from(DOC_BUCKET).remove([i.path]);
-        }
-        await kv.del(keyFor(userId, col, i.id));
-      }
-    }
+    // Uploaded files first (kv rows are the index we use to find them, plus a folder sweep for orphans).
+    const docs = await kv.getByPrefix(keyFor(userId, "documents"));
+    const paths = new Set<string>(docs.map((d: any) => d?.path).filter((p: unknown) => isOwnedStoragePath(userId, p)));
+    const { data: listed } = await supabase.storage.from(DOC_BUCKET).list(userId, { limit: 1000 });
+    for (const f of listed ?? []) paths.add(`${userId}/${f.name}`);
+    if (paths.size) await supabase.storage.from(DOC_BUCKET).remove([...paths]);
+
+    // Every KV namespace that holds data keyed by this user (collections, subscription, usage, feedback, AI caches...).
+    const prefixes = [
+      `user:${userId}:`, `events:${userId}:`, `usage:${userId}:`, `notify:${userId}:`, `feedback:${userId}:`,
+      `churn:${userId}:`, `ai-coach-limit:${userId}:`, `subscription:${userId}`, `offer-user:${userId}`,
+      `feature-overrides:${userId}`, `weekly-briefing:${userId}`,
+    ];
+    for (const prefix of prefixes) await delByPrefix(prefix);
+
     const { error } = await supabase.auth.admin.deleteUser(userId);
     if (error) {
       console.log(`Account deletion (auth) failed for user ${userId}:`, error.message);
-      return c.json({ error: error.message }, 500);
+      return c.json({ error: "Account deletion failed" }, 500);
     }
     return c.json({ ok: true });
   } catch (e) {
     console.log("Account deletion exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -293,9 +376,6 @@ app.post("/make-server-a3fe149f/me/delete", async (c) => {
 // ───────────────────────────────────────────────────────────────────────
 // Admin identity: user email must be listed in env ADMIN_EMAILS (comma-separated).
 // Keys are isolated from user data under the `admin:` and `events:` prefixes.
-
-const ADMIN_EMAILS = (Deno.env.get("ADMIN_EMAILS") || "")
-  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 // All app features that admin can grant / revoke per user.
 const ALL_FEATURES = [
@@ -338,14 +418,28 @@ async function ensureDefaultPlans() {
   }
 }
 
+/** Append-only record of admin mutations (who did what to whom). */
+async function auditAdmin(admin: { id: string; email: string }, action: string, target: string | null, detail?: unknown) {
+  try {
+    const ts = Date.now();
+    await kv.set(`admin-audit:${ts}:${crypto.randomUUID().slice(0, 8)}`, {
+      at: new Date(ts).toISOString(), adminId: admin.id, adminEmail: admin.email, action, target,
+      detail: detail ?? null,
+    });
+  } catch (e) {
+    console.log("Admin audit write failed:", e);
+  }
+}
+
 async function resolveAdmin(c: any): Promise<{ id: string; email: string } | null> {
   const token = c.req.header("Authorization")?.split(" ")[1];
   if (!token) return null;
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user?.email) return null;
+  // An unconfirmed address proves nothing about who owns it: never grant admin on it.
+  if (!data.user.email_confirmed_at) return null;
   const email = data.user.email.toLowerCase();
-  const ok = ADMIN_EMAILS.includes(email);
-  if (!ok) return null;
+  if (!isAdminEmailListed(email, ADMIN_EMAILS)) return null;
   return { id: data.user.id, email };
 }
 
@@ -354,8 +448,10 @@ app.post("/make-server-a3fe149f/track", async (c) => {
   const userId = await requireUser(c);
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   try {
+    if (!trackLimiter(userId)) return c.json({ error: "Too many events" }, 429);
     const { feature, meta } = await c.req.json();
-    if (!feature) return c.json({ error: "Missing feature" }, 400);
+    if (!isValidFeatureKey(feature)) return c.json({ error: "Invalid feature" }, 400);
+    if (meta != null && !withinRecordLimit(meta, 2048)) return c.json({ error: "meta too large" }, 413);
     const ts = Date.now();
     await kv.set(`events:${userId}:${ts}:${crypto.randomUUID().slice(0, 8)}`, {
       userId, feature, meta: meta ?? null, at: new Date(ts).toISOString(),
@@ -370,7 +466,7 @@ app.post("/make-server-a3fe149f/track", async (c) => {
     return c.json({ ok: true });
   } catch (e) {
     console.log("Track event failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -410,7 +506,7 @@ app.get("/make-server-a3fe149f/me/subscription", async (c) => {
     const entitlements: Record<string, boolean> = { ...planUnlocks, ...overrides };
     return c.json({ subscription: sub, offer, plan, entitlements, inTrial, allFeatures: ALL_FEATURES });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -418,10 +514,13 @@ app.post("/make-server-a3fe149f/me/subscription/upgrade", async (c) => {
   const userId = await requireUser(c);
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   try {
-    const { planId } = await c.req.json();
-    const plan = planId ? await kv.get(`admin:plan:${planId}`) : null;
+    const body = await c.req.json();
+    const decision = evaluateSelfServePlanChange(body?.planId, ALLOW_UNPAID_UPGRADES);
+    if (!decision.ok) return c.json({ error: decision.error }, decision.status);
+    const planId = decision.planId;
+    const plan = await kv.get(`admin:plan:${planId}`);
     const sub: any = {
-      planId: planId || "free",
+      planId,
       since: new Date().toISOString(),
       lifetime: planId === "lifetime",
       renewsAt: planId === "pro" ? new Date(Date.now() + 30 * 86400000).toISOString() : null,
@@ -440,7 +539,7 @@ app.post("/make-server-a3fe149f/me/subscription/upgrade", async (c) => {
 
     return c.json({ ok: true, subscription: sub, plan });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -448,6 +547,7 @@ app.post("/make-server-a3fe149f/me/subscription/upgrade", async (c) => {
 app.post("/make-server-a3fe149f/me/subscription/renew", async (c) => {
   const userId = await requireUser(c);
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  if (!ALLOW_UNPAID_UPGRADES) return c.json({ error: "Online payments are not enabled yet. Please contact support to renew." }, 402);
   const sub = (await kv.get(`subscription:${userId}`)) || {};
   if (sub.planId !== "pro") return c.json({ error: "Renewal only applies to monthly Pro" }, 400);
   const base = sub.renewsAt && new Date(sub.renewsAt).getTime() > Date.now() ? new Date(sub.renewsAt).getTime() : Date.now();
@@ -481,8 +581,7 @@ app.get("/make-server-a3fe149f/admin/metrics", async (c) => {
   if (!admin) return c.json({ error: "Not an admin" }, 403);
   try {
     await ensureDefaultPlans();
-    const { data: list } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    const users = list?.users || [];
+    const users = await listAllUsers();
 
     const plans = await kv.getByPrefix("admin:plan:");
     const subs = await kv.getByPrefix("subscription:");
@@ -532,7 +631,7 @@ app.get("/make-server-a3fe149f/admin/metrics", async (c) => {
     });
   } catch (e) {
     console.log("Admin metrics failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -540,11 +639,9 @@ app.get("/make-server-a3fe149f/admin/users", async (c) => {
   const admin = await resolveAdmin(c);
   if (!admin) return c.json({ error: "Not an admin" }, 403);
   try {
-    const { data: list, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    if (error) return c.json({ error: error.message }, 500);
-    const users = list?.users || [];
+    const users = await listAllUsers();
 
-    const enriched = await Promise.all(users.map(async (u) => {
+    const enrich = async (u: any) => {
       const txs = await kv.getByPrefix(`user:${u.id}:transactions:`);
       const sub = (await kv.get(`subscription:${u.id}`)) || { planId: "free" };
       const offer = await kv.get(`offer-user:${u.id}`);
@@ -560,12 +657,17 @@ app.get("/make-server-a3fe149f/admin/users", async (c) => {
         hasOffer: !!offer,
         featureCount: usage.reduce((s: number, x: any) => s + (x.count || 0), 0),
       };
-    }));
+    };
+    // Bounded concurrency: each user costs several KV scans.
+    const enriched: any[] = [];
+    for (let i = 0; i < users.length; i += 15) {
+      enriched.push(...(await Promise.all(users.slice(i, i + 15).map(enrich))));
+    }
 
     return c.json({ items: enriched });
   } catch (e) {
     console.log("Admin users list failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -618,7 +720,7 @@ app.get("/make-server-a3fe149f/admin/users/:id", async (c) => {
     });
   } catch (e) {
     console.log("Admin user detail failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -639,9 +741,10 @@ app.post("/make-server-a3fe149f/admin/plans", async (c) => {
     const id = body.id || crypto.randomUUID();
     const item = { ...body, id, updatedAt: new Date().toISOString() };
     await kv.set(`admin:plan:${id}`, item);
+    await auditAdmin(admin, "plan.upsert", id);
     return c.json({ item });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -663,6 +766,7 @@ app.post("/make-server-a3fe149f/admin/users/:id/features", async (c) => {
     const cur = (await kv.get(`feature-overrides:${userId}`)) || {};
     cur[feature] = !!enabled;
     await kv.set(`feature-overrides:${userId}`, cur);
+    await auditAdmin(admin, "user.feature", userId, { feature, enabled: !!enabled });
     // Notify the user
     {
       const nid = crypto.randomUUID();
@@ -678,7 +782,7 @@ app.post("/make-server-a3fe149f/admin/users/:id/features", async (c) => {
     }
     return c.json({ ok: true, overrides: cur });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -686,6 +790,7 @@ app.delete("/make-server-a3fe149f/admin/plans/:id", async (c) => {
   const admin = await resolveAdmin(c);
   if (!admin) return c.json({ error: "Not an admin" }, 403);
   await kv.del(`admin:plan:${c.req.param("id")}`);
+  await auditAdmin(admin, "plan.delete", c.req.param("id"));
   return c.json({ ok: true });
 });
 
@@ -710,6 +815,7 @@ app.post("/make-server-a3fe149f/admin/users/:id/plan", async (c) => {
     if (planId === "pro") sub.renewsAt = new Date(Date.now() + 30 * 86400000).toISOString();
     if (planId === "lifetime") sub.lifetime = true;
     await kv.set(`subscription:${userId}`, sub);
+    await auditAdmin(admin, "user.plan", userId, { from: prev?.planId ?? null, to: planId || "" });
 
     // Activate features of this plan as overrides (admin grants them explicitly)
     if (plan?.features?.length) {
@@ -732,7 +838,7 @@ app.post("/make-server-a3fe149f/admin/users/:id/plan", async (c) => {
     }
     return c.json({ ok: true, subscription: sub });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -780,20 +886,23 @@ app.post("/make-server-a3fe149f/admin/offers", async (c) => {
     if (body.scope === "user" && body.userId) {
       await kv.set(`offer-user:${body.userId}`, item);
       const nid = crypto.randomUUID();
-      await kv.set(`notify:${body.userId}:${Date.now()}:${nid.slice(0, 6)}`, {
+      const nts = Date.now();
+      // Key must be derivable from (at, id): /me/notifications/read rewrites it by that formula.
+      await kv.set(`notify:${body.userId}:${nts}:${nid}`, {
         id: nid,
         title: `Offer: ${body.title}`,
         body: body.description || `${body.discountPct || 0}% off${body.planId ? ` on ${body.planId}` : ""}`,
         kind: "offer",
-        at: new Date().toISOString(),
+        at: new Date(nts).toISOString(),
         read: false,
       });
     } else {
       await kv.set(`offer-global:${id}`, { ...item, scope: "global" });
     }
+    await auditAdmin(admin, "offer.create", body.scope === "user" ? body.userId ?? null : id);
     return c.json({ item });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -801,6 +910,7 @@ app.delete("/make-server-a3fe149f/admin/offers/user/:userId", async (c) => {
   const admin = await resolveAdmin(c);
   if (!admin) return c.json({ error: "Not an admin" }, 403);
   await kv.del(`offer-user:${c.req.param("userId")}`);
+  await auditAdmin(admin, "offer.delete", c.req.param("userId"));
   return c.json({ ok: true });
 });
 
@@ -808,186 +918,12 @@ app.delete("/make-server-a3fe149f/admin/offers/global/:id", async (c) => {
   const admin = await resolveAdmin(c);
   if (!admin) return c.json({ error: "Not an admin" }, 403);
   await kv.del(`offer-global:${c.req.param("id")}`);
+  await auditAdmin(admin, "offer.delete", c.req.param("id"));
   return c.json({ ok: true });
 });
 
-// ─── AI: merchant normalization (paid + AI opt-in) ──────────────────────
-// ─── AI: Gemini Integration ──────────────────────
-async function queryGemini(prompt: string, isJson: boolean = false): Promise<string> {
-  const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
-  
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
-  const body: any = {
-    contents: [{
-      parts: [{ text: prompt }]
-    }]
-  };
-  if (isJson) {
-    body.generationConfig = {
-      responseMimeType: "application/json"
-    };
-  }
-  
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Gemini API error ${res.status}: ${txt}`);
-  }
-  const json = await res.json();
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Empty response from Gemini");
-  return text;
-}
-
-app.post("/make-server-a3fe149f/ai/normalize-merchants", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const { merchants } = await c.req.json();
-    if (!Array.isArray(merchants) || merchants.length === 0) {
-      return c.json({ error: "merchants must be a non-empty array" }, 400);
-    }
-    const list: string[] = merchants.slice(0, 100).map((m: any) => String(m).slice(0, 120));
-
-    // Entitlement check: import feature must be unlocked for this user
-    const sub = await kv.get(`subscription:${userId}`);
-    const overrides = (await kv.get(`feature-overrides:${userId}`)) || {};
-    const inTrial = sub?.trialEndsAt ? new Date(sub.trialEndsAt).getTime() > Date.now() : false;
-    const planUnlocks = sub?.planId === "pro" || sub?.planId === "lifetime" || inTrial;
-    const allowed = overrides.import === true || (overrides.import !== false && planUnlocks);
-    if (!allowed) return c.json({ error: "Import feature locked. Upgrade to Pro to use AI categorization." }, 402);
-
-    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-    if (!apiKey) {
-      return c.json({ items: list.map((m) => ({ input: m, canonical: m, category: "Uncategorised" })), aiUsed: false });
-    }
-
-    const prompt = `You normalise messy merchant strings from bank/UPI statements into clean canonical brand names and a category.\n` +
-      `Return a JSON object: {"items":[{"input":"...","canonical":"...","category":"..."}]} with one entry per input in the same order.\n` +
-      `Use one of these categories when possible: Food, Travel, Shopping, Grocery, Medical, Rent, Entertainment, Bills, Salary, Transfer, Other.\n` +
-      `Examples: "UPI/FLIPKART INDIA PVT LTD/ABC" → {canonical:"Flipkart", category:"Shopping"}; "ZOMATO BLR" → {canonical:"Zomato", category:"Food"}.\n` +
-      `Inputs: ${JSON.stringify(list)}`;
-
-    let items = [];
-    try {
-      const text = await queryGemini(prompt, true);
-      const parsed = JSON.parse(text);
-      items = Array.isArray(parsed.items) ? parsed.items : list.map((m) => ({ input: m, canonical: m, category: "Uncategorised" }));
-    } catch (e) {
-      console.log("Gemini normalise failed:", e);
-      items = list.map((m) => ({ input: m, canonical: m, category: "Uncategorised" }));
-    }
-    return c.json({ items, aiUsed: true });
-  } catch (e) {
-    console.log("AI normalize exception:", e);
-    return c.json({ error: String(e) }, 500);
-  }
-});
-
-app.post("/make-server-a3fe149f/ai/coach", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const { message, history, context } = await c.req.json();
-    
-    // ── Daily rate limit: 3 AI chats per user per day ──
-    const today = new Date().toISOString().slice(0, 10);
-    const rateLimitKey = `ai-coach-limit:${userId}:${today}`;
-    const usage = (await kv.get(rateLimitKey)) || { count: 0 };
-    if (usage.count >= 3) {
-      return c.json({ error: "Daily AI Coach limit reached (3/3). Resets at midnight." }, 429);
-    }
-    
-    // Strict Sanitization: Extract ONLY anonymized transaction summaries
-    const safeContext = {
-      privacyScope: "TRANSACTIONS_ONLY (Anonymized)",
-      totalIncome: context?.totalIncome ?? 0,
-      totalExpenses: context?.totalExpenses ?? 0,
-      monthlySavings: context?.monthlySavings ?? 0,
-      categorySpend: context?.categorySpend ?? {},
-      recentTransactions: Array.isArray(context?.recentTransactions)
-        ? context.recentTransactions.slice(0, 12).map((t: any) => ({
-            category: t.category,
-            amount: t.amount,
-            type: t.type,
-            date: t.date,
-            ...(t.title ? { title: t.title } : {}),
-          }))
-        : [],
-    };
-
-    // Construct Gemini chat messages
-    const contents = [];
-    
-    // System instruction/context
-    const systemPrompt = `You are the AI Financial Advisor / Coach for LiveSync AI, an on-device personal financial OS for Indian users.\n` +
-      `Your tone is professional, encouraging, practical, and family-oriented.\n` +
-      `Format values in Indian Rupees (e.g. ₹10,000) or standard percentages.\n` +
-      `Avoid generic advice. Use ONLY the anonymized monthly transaction context below.\n` +
-      `Never ask for or store banking credentials, passwords, or personal identities.\n\n` +
-      `USER ANONYMIZED TRANSACTION CONTEXT:\n${JSON.stringify(safeContext, null, 2)}`;
-      
-    contents.push({
-      role: "user",
-      parts: [{ text: systemPrompt }]
-    });
-    contents.push({
-      role: "model",
-      parts: [{ text: "Understood. I will act as a helpful AI Financial Advisor for LiveSync AI and use this anonymized transaction context to answer user queries with concrete, family-focused recommendations in Rupees." }]
-    });
-    
-    // Add history
-    if (Array.isArray(history)) {
-      for (const msg of history) {
-        contents.push({
-          role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.text }]
-        });
-      }
-    }
-    
-    // Add current message
-    contents.push({
-      role: "user",
-      parts: [{ text: message }]
-    });
-    
-    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-    if (!apiKey) {
-      return c.json({ text: "AI Coach is in offline demo mode. Please configure GEMINI_API_KEY on the server to activate real AI responses." });
-    }
-    
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
-    console.log(`AI Coach request for user ${userId} — usage: ${usage.count + 1}/3`);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents })
-    });
-    
-    if (!res.ok) {
-      const txt = await res.text();
-      console.log("Gemini coach failed:", res.status, txt);
-      return c.json({ error: `Gemini error ${res.status}: ${txt.slice(0, 200)}` }, 500);
-    }
-    
-    const aiJson = await res.json();
-    const text = aiJson.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't generate a response.";
-    
-    // Increment rate limit counter on success
-    await kv.set(rateLimitKey, { count: usage.count + 1, lastAt: new Date().toISOString() });
-    
-    return c.json({ text });
-  } catch (e) {
-    console.log("AI coach exception:", e);
-    return c.json({ error: String(e) }, 500);
-  }
-});
+// NOTE: LiveSync runs no AI service. AI features call the user's own provider directly from the app
+// (src/app/lib/aiClient.ts) with the user's own key, so no AI keys or routes live on this server.
 
 // ─── Country switch: wipe cloud-synced collections for the user ──────────
 app.post("/make-server-a3fe149f/me/switch-country", async (c) => {
@@ -1038,7 +974,7 @@ app.post("/make-server-a3fe149f/me/switch-country", async (c) => {
     return c.json({ ok: true, removed, country });
   } catch (e) {
     console.log("Country switch exception:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -1069,7 +1005,7 @@ app.post("/make-server-a3fe149f/feedback", async (c) => {
     return c.json({ item });
   } catch (e) {
     console.log("Feedback submit failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -1100,9 +1036,10 @@ app.post("/make-server-a3fe149f/admin/feedback/:userId/:id/status", async (c) =>
     const key = `feedback:${userId}:${new Date(target.createdAt).getTime()}:${id}`;
     const updated = { ...target, status, resolvedAt: status === "resolved" ? new Date().toISOString() : undefined, resolvedBy: status === "resolved" ? admin.email : undefined };
     await kv.set(key, updated);
+    await auditAdmin(admin, "feedback.status", userId, { id, status });
     return c.json({ item: updated });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -1115,6 +1052,9 @@ app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
     const contribId = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
 
+    const amount = Number(body.amount);
+    if (!Number.isFinite(amount) || Math.abs(amount) > 1e12) return c.json({ error: "Invalid amount" }, 400);
+
     // Fetch bucket
     const bucketKey = keyFor(userId, "buckets", id);
     const bucket = await kv.get(bucketKey);
@@ -1125,7 +1065,7 @@ app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
       id: contribId,
       bucketId: id,
       userId,
-      amount: Number(body.amount) || 0,
+      amount,
       sourceAccountId: body.sourceAccountId || null,
       note: body.note || "",
       date: body.date || now,
@@ -1147,159 +1087,9 @@ app.post("/make-server-a3fe149f/buckets/:id/contributions", async (c) => {
     return c.json({ item: contrib, bucket, justCompleted: bucket.status === "completed" });
   } catch (e) {
     console.log("Add bucket contribution failed:", e);
-    return c.json({ error: String(e) }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
-
-// ════════════════════════════════════════════════════════════════════════
-// AI-ERA FEATURES — P0/P1 priority endpoints
-// Each endpoint below is tagged with the priority it implements from the
-// "AI Era Missing Features" roadmap. Reuses queryGemini() defined above.
-// ════════════════════════════════════════════════════════════════════════
-
-// ─── [P0] AI Feature Status Check ──────────────────────────────────────
-// GET /ai/status — lets the app (and the verify script) confirm which AI
-// features are actually configured and live, without guessing.
-app.get("/make-server-a3fe149f/ai/status", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-  const briefingKey = `weekly-briefing:${userId}`;
-  const lastBriefing = await kv.get(briefingKey);
-  return c.json({
-    geminiConfigured: !!apiKey,
-    features: {
-      P0_cashFlowForecast: { server: "n/a (client-side, always on)", status: "ok" },
-      P0_anomalyDetection: { server: "n/a (client-side, always on)", status: "ok" },
-      P0_weeklyBriefing: { server: "ai/weekly-briefing", status: apiKey ? "ok" : "needs GEMINI_API_KEY", lastGeneratedAt: lastBriefing?.generatedAt ?? null },
-      P1_agenticActions: { server: "buckets/:id/contributions (existing)", status: "ok" },
-      P1_negotiationScript: { server: "ai/negotiation-script", status: apiKey ? "ok" : "needs GEMINI_API_KEY" },
-    },
-  });
-});
-
-// ─── [P0] Weekly AI Briefing ────────────────────────────────────────────
-// POST /ai/weekly-briefing — computes a plain-language weekly summary from
-// an anonymized client-supplied snapshot, caches it for 7 days so repeated
-// app opens in the same week don't burn extra Gemini calls.
-app.post("/make-server-a3fe149f/ai/weekly-briefing", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const { snapshot, force } = await c.req.json();
-    const cacheKey = `weekly-briefing:${userId}`;
-    const cached = await kv.get(cacheKey);
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
-    if (!force && cached?.generatedAt && Date.now() - new Date(cached.generatedAt).getTime() < weekMs) {
-      return c.json({ text: cached.text, cached: true, generatedAt: cached.generatedAt });
-    }
-
-    const safeSnapshot = {
-      healthScore: Number(snapshot?.healthScore) || 0,
-      healthScoreDelta: Number(snapshot?.healthScoreDelta) || 0,
-      weeklySpend: Number(snapshot?.weeklySpend) || 0,
-      avgWeeklySpend: Number(snapshot?.avgWeeklySpend) || 0,
-      savingsRatePct: Number(snapshot?.savingsRatePct) || 0,
-      topCategory: String(snapshot?.topCategory || "").slice(0, 60),
-      topCategoryChangePct: Number(snapshot?.topCategoryChangePct) || 0,
-      annualLeakage: Number(snapshot?.annualLeakage) || 0,
-      forecastEndOfMonthBalance: Number(snapshot?.forecastEndOfMonthBalance) || 0,
-    };
-
-    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-    if (!apiKey) {
-      const fallback = `Weekly briefing: health score ${safeSnapshot.healthScore}. Configure GEMINI_API_KEY on the server for AI-written summaries.`;
-      return c.json({ text: fallback, cached: false, aiUsed: false });
-    }
-
-    const prompt = `You write a short "Monday Money Briefing" push-notification-style summary for an Indian personal finance app called LiveSync AI.\n` +
-      `Rules: 2-3 sentences max. Plain, warm, non-judgmental tone. Use ₹ for amounts. No generic advice — reference ONLY the numbers given. ` +
-      `End with exactly one concrete, specific suggestion tied to the numbers below.\n\n` +
-      `DATA (anonymized, this user only):\n${JSON.stringify(safeSnapshot, null, 2)}\n\n` +
-      `Write the briefing now:`;
-
-    let text: string;
-    try {
-      text = (await queryGemini(prompt, false)).trim();
-    } catch (e) {
-      console.log("Weekly briefing Gemini call failed:", e);
-      text = `Health score ${safeSnapshot.healthScore} this week. Your ${safeSnapshot.topCategory || "spending"} moved ${safeSnapshot.topCategoryChangePct}% vs your average — worth a look.`;
-    }
-
-    const record = { text, generatedAt: new Date().toISOString(), snapshot: safeSnapshot };
-    await kv.set(cacheKey, record);
-    return c.json({ text, cached: false, generatedAt: record.generatedAt });
-  } catch (e) {
-    console.log("Weekly briefing exception:", e);
-    return c.json({ error: String(e) }, 500);
-  }
-});
-
-// ─── [P1] AI-Drafted Negotiation Script ────────────────────────────────
-// POST /ai/negotiation-script — turns a detected overpay (high APR card,
-// above-market insurance premium, forgotten subscription) into a ready-
-// to-send message the user can copy/paste. Pure text generation — no
-// banking integration, no money movement, nothing regulator-sensitive.
-app.post("/make-server-a3fe149f/ai/negotiation-script", async (c) => {
-  const userId = await requireUser(c);
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const { kind, context } = await c.req.json();
-    const allowedKinds = ["credit_card_rate", "insurance_premium", "loan_rate", "subscription_cancel"];
-    if (!allowedKinds.includes(kind)) {
-      return c.json({ error: `kind must be one of ${allowedKinds.join(", ")}` }, 400);
-    }
-
-    // Shared daily rate limit with AI coach (same user, same cost bucket)
-    const today = new Date().toISOString().slice(0, 10);
-    const rateLimitKey = `ai-coach-limit:${userId}:${today}`;
-    const usage = (await kv.get(rateLimitKey)) || { count: 0 };
-    if (usage.count >= 3) {
-      return c.json({ error: "Daily AI limit reached (3/3). Resets at midnight." }, 429);
-    }
-
-    const safeContext = {
-      merchantOrProvider: String(context?.name || "the provider").slice(0, 80),
-      currentAmount: Number(context?.currentAmount) || 0,
-      currentRatePct: context?.currentRatePct != null ? Number(context.currentRatePct) : null,
-      marketBenchmarkPct: context?.marketBenchmarkPct != null ? Number(context.marketBenchmarkPct) : null,
-      tenureMonths: context?.tenureMonths != null ? Number(context.tenureMonths) : null,
-      hasGoodPaymentHistory: context?.hasGoodPaymentHistory !== false,
-    };
-
-    const kindInstructions: Record<string, string> = {
-      credit_card_rate: "Draft a short, polite message the user can send to their bank's customer care (chat/call script) requesting an interest rate review, citing tenure and payment history.",
-      insurance_premium: "Draft a short message requesting a premium review or asking to compare with a no-claim-bonus adjusted quote, to send to the insurer or agent.",
-      loan_rate: "Draft a short message requesting a loan interest rate reset/balance transfer discussion, citing tenure and repayment record.",
-      subscription_cancel: "Draft a short cancellation request message/email for this subscription, polite but firm, asking for confirmation of the cancellation date and no further charges.",
-    };
-
-    const apiKey = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
-    if (!apiKey) {
-      return c.json({ text: "AI script drafting needs GEMINI_API_KEY configured on the server.", aiUsed: false });
-    }
-
-    const prompt = `You draft short, ready-to-send negotiation/cancellation messages for an Indian personal finance app.\n` +
-      `${kindInstructions[kind]}\n` +
-      `Keep it under 80 words. Do not invent facts not given below. Do not guarantee any outcome — the message should ask, not demand.\n` +
-      `Add one line at the top: "Copy and send this:" then the message itself.\n\n` +
-      `Context: ${JSON.stringify(safeContext)}`;
-
-    let text: string;
-    try {
-      text = (await queryGemini(prompt, false)).trim();
-    } catch (e) {
-      console.log("Negotiation script Gemini call failed:", e);
-      return c.json({ error: "AI draft failed, please try again." }, 500);
-    }
-
-    await kv.set(rateLimitKey, { count: usage.count + 1, lastAt: new Date().toISOString() });
-    return c.json({ text, aiUsed: true });
-  } catch (e) {
-    console.log("Negotiation script exception:", e);
-    return c.json({ error: String(e) }, 500);
-  }
-});
 
 Deno.serve(app.fetch);
