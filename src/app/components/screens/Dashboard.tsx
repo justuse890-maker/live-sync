@@ -17,6 +17,9 @@ import { tap } from "../../lib/feedback";
 import { buildHero } from "../../lib/homeHero";
 import { SafeToSpendSheet } from "../SafeToSpendSheet";
 import { monthEndOutlook } from "../../lib/outlook";
+import { ReviewSheet, useReviewItems } from "../ReviewSheet";
+import { EditTransaction } from "../EditTransaction";
+import { autoDebitNotices } from "../../lib/autoDebit";
 import { emiBurden, typicalMonthlyIncome } from "../../lib/emiPlanner";
 import { currentInstallment } from "../../lib/loanEngine";
 import { readEmiAlertPct } from "../EmiCommand";
@@ -78,6 +81,10 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
     isCurrentMonth,
   }), [snap.current.income, snap.current.expense, upcoming, monthEnd, isCurrentMonth]);
   const [mathOpen, setMathOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewEdit, setReviewEdit] = useState<any>(null);
+  const review = useReviewItems();
+  const autoDebits = useMemo(() => autoDebitNotices(upcoming), [upcoming]);
   const outlook = useMemo(
     () => (isCurrentMonth ? monthEndOutlook({ txs: store.transactions as any, incomeSoFar: hero.moneyIn, committedLeft: hero.stillToPay }) : undefined),
     [isCurrentMonth, store.transactions, hero.moneyIn, hero.stillToPay],
@@ -146,7 +153,7 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
               <h1 className="text-lg font-bold text-slate-900 tracking-tight leading-tight truncate">
                 {firstName ? `Hi ${firstName}` : "Hi there"} <span className="inline-block">👋</span>
               </h1>
-              <p className="text-xs text-slate-500 font-medium flex items-center gap-1"><Lock className="size-3" /> On this phone · never sold · no SMS reading</p>
+              <button type="button" onClick={() => go("data-safety")} className="text-xs text-slate-500 font-medium flex items-center gap-1 text-left active:opacity-70" aria-label="On this phone, never sold, no SMS reading. Open Data & privacy"><Lock className="size-3" /> On this phone · never sold · no SMS reading</button>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -245,7 +252,33 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
 
               <SafeToSpendSheet open={mathOpen} onClose={() => setMathOpen(false)} hero={hero} dueItems={dueItems} isCurrentMonth={isCurrentMonth} monthLabel={monthFull} outlook={outlook} />
 
+              {autoDebits.length > 0 && (
+                <div className="ls-rise rounded-2xl border border-sky-200 bg-sky-50 p-4 space-y-2.5" role="region" aria-label="Payments that may auto-debit soon">
+                  <div className="text-sm font-bold text-sky-950">Money may leave your account soon</div>
+                  {autoDebits.slice(0, 3).map((n) => (
+                    <div key={n.id} className="space-y-1">
+                      <div className="flex items-center justify-between gap-3 text-sm"><span className="font-semibold truncate">{n.title}</span><b className="shrink-0">{n.amountText} · {n.whenText}</b></div>
+                      <p className="text-[11px] text-sky-900/80 leading-snug">{n.stopHint}</p>
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-sky-900/70">{autoDebits[0].body}</p>
+                </div>
+              )}
+
+              {review.items.length > 0 && (
+                <button onClick={() => { tap(); setReviewOpen(true); }} className="ls-rise w-full flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-left active:scale-[0.99]">
+                  <span>
+                    <span className="block text-sm font-bold text-amber-950">{review.items.length} {review.items.length === 1 ? "entry" : "entries"} worth a second look</span>
+                    <span className="block text-[11px] text-amber-900/80">Missing categories, odd amounts, possible duplicates</span>
+                  </span>
+                  <ChevronRight className="size-4 text-amber-800 shrink-0" />
+                </button>
+              )}
+
               <CaLensCard go={go} />
+
+              <ReviewSheet open={reviewOpen} onClose={() => setReviewOpen(false)} onEdit={(t) => setReviewEdit(t)} items={review.items} dismiss={review.dismiss} />
+              <EditTransaction tx={reviewEdit} onClose={() => setReviewEdit(null)} />
 
               {/* ── 1. Today ── */}
               <Card className="ls-rise">

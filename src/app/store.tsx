@@ -68,6 +68,8 @@ export type Tx = {
   loanPaymentType?: "emi" | "pre_emi" | "prepayment";
   /** Recorded automatically on the due date by an auto-debit mandate (not typed in by the user). */
   autoDebited?: boolean;
+  /** How the entry was captured. Absent on older rows. */
+  source?: "manual" | "voice" | "scan" | "import" | "paste";
   notes?: string;
   createdAt?: string;
   /** Own-account transfer leg — excluded from income/expense everywhere (see lib/transfers.ts). */

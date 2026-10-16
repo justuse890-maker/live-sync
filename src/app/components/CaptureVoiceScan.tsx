@@ -33,6 +33,7 @@ export function CaptureVoiceScan({ mode, onClose }: { mode: Mode; onClose: () =>
           date: d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : todayISO(),
           merchant: d.merchant ? d.merchant.trim() : undefined,
           notes: (d.notes || transcript || "").trim() || undefined,
+          source: mode,
         });
       }
       onClose();

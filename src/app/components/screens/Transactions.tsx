@@ -48,7 +48,7 @@ import { inr } from "../types";
 import { Tx, canEditTx, useStore } from "../../store";
 import { EditTransaction } from "../EditTransaction";
 import { TransferSuggestions, AddTransferSheet, TransferDetail } from "../TransferPanel";
-import { TxKindBadge } from "../TxKindBadge";
+import { TxKindBadge, TxSourceBadge } from "../TxKindBadge";
 import { useTranslation } from "../../lib/i18n";
 import {
   getMonthKey,
@@ -700,6 +700,7 @@ export function Transactions() {
                               <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5 truncate">
                                 <span className="font-medium text-slate-600">{t.category}</span>
                                 <TxKindBadge tx={t as any} />
+                                <TxSourceBadge tx={t as any} />
                                 {((t.loanId && loanMap[t.loanId]) || (t.creditCardId && cardMap[t.creditCardId]) || (t.payments && t.payments.length > 0)) && (
                                   <>
                                     <span>&middot;</span>

@@ -143,6 +143,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       loanPaymentType: (!isIncome && selectedLoanId) ? loanPaymentType : undefined,
       notes: notes ? notes.trim() : undefined,
       scope: persona === "business" ? scope : undefined,
+      source: "manual",
     }).catch(() => {}); // errors handled in store
 
     // Offer "remind me next time?" for ordinary spending (the sheet decides whether one is already set).

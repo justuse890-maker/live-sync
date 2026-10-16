@@ -63,6 +63,8 @@ export async function requestNotificationPermission(): Promise<PermissionState> 
 }
 
 /** Times we alert for an obligation: day-before 9 AM for payments, plus the due moment. */
+const MAY_AUTODEBIT = new Set(["subscription", "emi", "insurance"]);
+
 type TimedAlert = { at: Date; title: string; body: string; key: string; tier: Tier };
 
 function alertTimesFor(o: Obligation, now: Date): TimedAlert[] {
@@ -84,7 +86,7 @@ function alertTimesFor(o: Obligation, now: Date): TimedAlert[] {
       out.push({
         at: dayBefore, key: `${o.id}:pre`, tier: tierForAlert({ kind: "heads-up", source: o.source }),
         title: c ? c.title : `Due tomorrow · ${o.title}`,
-        body: c ? c.body : amt ? `${amt} is due tomorrow. Tap to review.` : "Due tomorrow. Tap to review.",
+        body: c ? c.body : amt && MAY_AUTODEBIT.has(o.source) ? `${amt} may be auto-debited tomorrow. Tap to see how to stop it.` : amt ? `${amt} is due tomorrow. Tap to review.` : "Due tomorrow. Tap to review.",
       });
     }
   }

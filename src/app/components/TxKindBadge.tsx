@@ -21,3 +21,12 @@ export function TxKindBadge({ tx }: { tx: Parameters<typeof txKind>[0] }) {
     </span>
   );
 }
+
+import { sourceBadge } from "../lib/txSource";
+
+/** How the entry got here (voice, scanned, imported, from a bank message, auto-recorded). Typed-in and older rows show nothing. */
+export function TxSourceBadge({ tx }: { tx: { source?: string; autoDebited?: boolean } }) {
+  const b = sourceBadge(tx);
+  if (!b) return null;
+  return <span title={b.hint} className="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600">{b.label}</span>;
+}

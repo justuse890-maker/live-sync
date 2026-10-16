@@ -287,6 +287,7 @@ function Importer() {
           amount: r.amount,
           type: r.type,
           date: r.date,
+          source: "import",
           createdAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), // backdated → past edit window
         };
         await addTransaction(tx);

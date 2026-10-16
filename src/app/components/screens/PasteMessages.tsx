@@ -72,6 +72,7 @@ export function PasteMessages({ onBack }: { onBack: () => void }) {
           accountId: d.accountId, creditCardId: d.creditCardId,
           payments: income ? undefined : [{ mode: d.creditCardId ? "credit" : d.instrument === "upi" ? "upi" : "debit", amount: d.amount }],
           notes: `From bank alert${d.ref ? ` · Ref ${d.ref}` : ""}`,
+          source: "paste",
         } as any, { silent: true });
       }
       notify.info(`${selected.length} ${selected.length === 1 ? "entry" : "entries"} added`);
