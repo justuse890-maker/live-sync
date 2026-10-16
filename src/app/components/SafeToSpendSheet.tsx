@@ -5,15 +5,19 @@ import { CountUp } from "./FlowFx";
 import { inr } from "./types";
 import type { Hero } from "../lib/homeHero";
 import { safeToSpendBreakdown, type DueItem } from "../lib/safeToSpend";
+import { describeFreeRange, type Outlook } from "../lib/outlook";
+import { formatInr } from "../lib/money";
 
 /** "Show the math" for the Home figure: every rupee added or subtracted, and what is deliberately left out. */
-export function SafeToSpendSheet({ open, onClose, hero, dueItems, isCurrentMonth, monthLabel }: {
+export function SafeToSpendSheet({ open, onClose, hero, dueItems, isCurrentMonth, monthLabel, outlook }: {
   open: boolean;
   onClose: () => void;
   hero: Hero;
   dueItems: DueItem[];
   isCurrentMonth: boolean;
   monthLabel: string;
+  /** Month-end view (current month only): committed bills vs an estimated range for everyday spending. */
+  outlook?: Outlook;
 }) {
   const b = useMemo(() => safeToSpendBreakdown({ hero, dueItems, isCurrentMonth }), [hero, dueItems, isCurrentMonth]);
   return (
@@ -43,6 +47,23 @@ export function SafeToSpendSheet({ open, onClose, hero, dueItems, isCurrentMonth
           {b.notes.map((n) => (
             <div key={n} className="flex items-start gap-2 text-[11px] text-muted-foreground bg-muted/50 rounded-xl p-2.5"><Info className="size-3.5 mt-0.5 shrink-0" /><span>{n}</span></div>
           ))}
+          {outlook && isCurrentMonth && outlook.daysLeft > 0 && (
+            <div className="rounded-xl border p-3 space-y-2 ls-rise" aria-label="By month end">
+              <div className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">By month end · {outlook.daysLeft} {outlook.daysLeft === 1 ? "day" : "days"} to go</div>
+              <div className="flex items-center justify-between gap-3"><span>Bills still to pay <span className="text-[10px] text-muted-foreground">exact</span></span><b>{formatInr(outlook.committedLeft)}</b></div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Everyday spending <span className="text-[10px] text-muted-foreground">estimate</span></span>
+                <b>{outlook.basis === "none" ? "not enough history" : Math.round(outlook.everydayLow) === Math.round(outlook.everydayHigh) ? `about ${formatInr(outlook.everydayLow)}` : `${formatInr(outlook.everydayLow)} – ${formatInr(outlook.everydayHigh)}`}</b>
+              </div>
+              {outlook.basis !== "none" && (
+                <div className="flex items-center justify-between gap-3 pt-2 border-t">
+                  <span className="font-bold">Could end the month with</span>
+                  <b className={outlook.freeHigh < 0 ? "text-rose-700" : "text-emerald-700"}>{describeFreeRange(outlook.freeLow, outlook.freeHigh)}</b>
+                </div>
+              )}
+              {outlook.notes.map((n) => <p key={n} className="text-[11px] text-muted-foreground">{n}</p>)}
+            </div>
+          )}
           <p className="text-[11px] text-muted-foreground">Own-account transfers are never counted as spending or income. This is a planning figure from what you have recorded, not a bank balance.</p>
         </div>
       </DialogContent>

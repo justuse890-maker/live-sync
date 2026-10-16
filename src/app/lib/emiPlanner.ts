@@ -170,3 +170,40 @@ export function bnplBurden(monthlyIncome: number, loans: Array<{ loanType?: stri
   const ratioPct = monthlyIncome > 0 ? (monthly / monthlyIncome) * 100 : null;
   return { monthly, ratioPct, flagged: ratioPct !== null && ratioPct > BNPL_ALERT_PCT, hasAny: monthly > 0 };
 }
+
+// ── Payoff dates ────────────────────────────────────────────────────────────
+
+export type LoanPayoff = {
+  loanId: string;
+  name: string;
+  remaining: number;
+  /** "YYYY-MM" of the final instalment; null while a loan is still interest-only (pre-EMI). */
+  lastEmiMonth: string | null;
+  emiAmount: number;
+  /** Sum of the remaining instalments at today's EMI. Exact arithmetic on the user's own figures, no rate assumed. */
+  totalLeft: number;
+  preEmi: boolean;
+};
+
+/** When each open loan ends and how much EMI money is still ahead, soonest payoff first. */
+export function loanPayoffs(
+  loans: Array<LoanLike & { nextEmiDueDate?: string }>,
+  now = new Date(),
+): LoanPayoff[] {
+  const out: LoanPayoff[] = [];
+  for (const l of loans) {
+    if (l.closed) continue;
+    const preEmi = l.phase === "pre_emi";
+    const remaining = Math.max(0, (l.totalEmis || 0) - (l.emisPaid || 0));
+    if (!preEmi && remaining === 0) continue;
+    let lastEmiMonth: string | null = null;
+    if (!preEmi) {
+      const due = l.nextEmiDueDate ? new Date(`${String(l.nextEmiDueDate).slice(0, 10)}T12:00:00`) : null;
+      const start = due && !isNaN(due.getTime()) ? new Date(due.getFullYear(), due.getMonth(), 1) : new Date(now.getFullYear(), now.getMonth(), 1);
+      const end = new Date(start.getFullYear(), start.getMonth() + remaining - 1, 1);
+      lastEmiMonth = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}`;
+    }
+    out.push({ loanId: l.id, name: l.lenderName, remaining, lastEmiMonth, emiAmount: l.emiAmount, totalLeft: preEmi ? 0 : remaining * l.emiAmount, preEmi });
+  }
+  return out.sort((a, b) => (a.lastEmiMonth ?? "9999-99").localeCompare(b.lastEmiMonth ?? "9999-99"));
+}

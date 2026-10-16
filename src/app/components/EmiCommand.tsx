@@ -2,9 +2,10 @@ import { useMemo, useState } from "react";
 import { Gauge, TrendingDown, Calculator, Info } from "lucide-react";
 import { inr } from "./types";
 import { CountUp } from "./FlowFx";
+import { formatCompactInr } from "../lib/money";
 import { sanitizeAmountInput } from "../lib/currencyUtils";
 import {
-  DEFAULT_EMI_ALERT_PCT, emiBurden, emiOutflowTimeline, prepaymentImpact,
+  DEFAULT_EMI_ALERT_PCT, emiBurden, emiOutflowTimeline, loanPayoffs, prepaymentImpact,
 } from "../lib/emiPlanner";
 import type { StructuredLoan } from "../store";
 
@@ -67,7 +68,7 @@ export function EmiBurdenCard({ monthlyIncome, totalEmi }: { monthlyIncome: numb
       </div>
 
       <div className="flex items-center gap-2 text-[11px] text-slate-600">
-        <span>My limit</span>
+        <span>My limit <span className="text-slate-400">(common guideline, lenders differ)</span></span>
         <input type="range" min={20} max={60} step={1} value={alertPct} onChange={(e) => setLimit(Number(e.target.value))} className="flex-1" aria-label="EMI limit as a percentage of income" />
         <span className="font-bold w-9 text-right">{alertPct}%</span>
       </div>
@@ -79,6 +80,7 @@ export function EmiBurdenCard({ monthlyIncome, totalEmi }: { monthlyIncome: numb
 /** Next 12 months of EMI outflow, one bar per month. */
 export function EmiOutflow({ loans }: { loans: StructuredLoan[] }) {
   const months = useMemo(() => emiOutflowTimeline(loans, 12), [loans]);
+  const payoffs = useMemo(() => loanPayoffs(loans as any), [loans]);
   const max = Math.max(1, ...months.map((m) => m.total));
   if (months.every((m) => m.total === 0)) return null;
   const first = months[0].total, last = months[months.length - 1].total;
@@ -96,6 +98,21 @@ export function EmiOutflow({ loans }: { loans: StructuredLoan[] }) {
           </div>
         ))}
       </div>
+      {payoffs.length > 0 && (
+        <div className="divide-y divide-border/50 border-t border-border/50 pt-1">
+          {payoffs.map((p) => (
+            <div key={p.loanId} className="flex items-center justify-between gap-3 py-2 text-xs">
+              <span className="min-w-0 truncate font-semibold text-slate-800">{p.name}</span>
+              <span className="text-right text-muted-foreground shrink-0">
+                {p.preEmi
+                  ? "interest only for now"
+                  : <>{p.remaining} EMI{p.remaining === 1 ? "" : "s"} left · ends {new Date(`${p.lastEmiMonth}-01T12:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" })} · <b className="text-slate-800">{formatCompactInr(p.totalLeft)}</b> to go</>}
+              </span>
+            </div>
+          ))}
+          {payoffs.some((p) => !p.preEmi) && <div className="text-[10px] text-muted-foreground pt-2">Remaining instalments at today’s EMI. Exact count, no interest-rate guess; your lender’s statement is the final word.</div>}
+        </div>
+      )}
     </div>
   );
 }

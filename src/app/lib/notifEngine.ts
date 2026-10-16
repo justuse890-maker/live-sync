@@ -5,19 +5,21 @@
  */
 
 import { getMonthKey } from "./dateUtils";
+import { formatInr } from "./money";
+import { detectRecurring, billRises } from "./recurring";
 
 export type SmartNotif = {
   id: string;
   title: string;
   body: string;
-  kind: "emi_due" | "budget_alert" | "bucket_behind" | "subscription_due" | "insurance_due" | "credit_due" | "monthly_summary" | "goal_update";
+  kind: "emi_due" | "budget_alert" | "budget_pace" | "bill_rise" | "bucket_behind" | "subscription_due" | "insurance_due" | "credit_due" | "monthly_summary" | "goal_update";
   severity: "info" | "warning" | "urgent";
   at: string; // ISO date string
   read?: boolean;
 };
 
 type NotifEngineInput = {
-  transactions: Array<{ amount: number; type: string; date: string; category: string }>;
+  transactions: Array<{ amount: number; type: string; date: string; category: string; title?: unknown; merchant?: unknown; isTransfer?: boolean }>;
   budgets: Array<{ category: string; limit: number; spent: number }>;
   buckets: Array<{ id: string; name: string; savedAmount: number; targetAmount: number; monthlySaveTarget?: number }>;
   bucketContributions: Array<{ bucketId: string; amount: number; date: string }>;
@@ -27,12 +29,22 @@ type NotifEngineInput = {
   creditCards: Array<{ bankName: string; cardName: string; last4Digits: string; statementDate?: number; dueDate?: number }>;
 };
 
-export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[] {
+export type EngineOptions = {
+  now?: Date;
+  /** The user's alert choices (see alertPrefs.ts). Missing values use the defaults. */
+  prefs?: { budgetWarnPct?: number; paceAlerts?: boolean };
+};
+
+export function generateSmartNotifications(input: NotifEngineInput, opts: EngineOptions = {}): SmartNotif[] {
   const notifs: SmartNotif[] = [];
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const now = opts.now ?? new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const currentMonth = today.slice(0, 7);
   const dayOfMonth = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const warnPct = Math.min(95, Math.max(50, opts.prefs?.budgetWarnPct ?? 85));
+  const paceAlerts = opts.prefs?.paceAlerts ?? true;
 
   // ─── 1. EMI Due in Next 5 Days ───────────────────────────────────────────
   for (const loan of input.structuredLoans) {
@@ -67,7 +79,7 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
         severity: "urgent",
         at: today,
       });
-    } else if (pct >= 85) {
+    } else if (pct >= warnPct) {
       notifs.push({
         id: `budget-warn-${budget.category}-${currentMonth}`,
         title: `Budget Warning — ${budget.category}`,
@@ -76,7 +88,33 @@ export function generateSmartNotifications(input: NotifEngineInput): SmartNotif[
         severity: "warning",
         at: today,
       });
+    } else if (paceAlerts && dayOfMonth >= 7 && pct >= 40 && actualSpent > 0) {
+      // Early heads-up: not over yet, but this month's pace will carry the category past its limit.
+      const projected = (actualSpent / dayOfMonth) * daysInMonth;
+      if (projected > budget.limit) {
+        notifs.push({
+          id: `budget-pace-${budget.category}-${currentMonth}`,
+          title: `${budget.category} is on pace to pass its budget`,
+          body: `${formatInr(actualSpent)} of ${formatInr(budget.limit)} used by day ${dayOfMonth}. At this pace the month ends near ${formatInr(projected)}. You can still slow down or adjust the budget.`,
+          kind: "budget_pace",
+          severity: "info",
+          at: today,
+        });
+      }
     }
+  }
+
+  // ─── 2b. Fixed monthly bill that got dearer ──────────────────────────────
+  for (const r of billRises(detectRecurring(input.transactions as any, now))) {
+    if ((now.getTime() - new Date(`${r.lastDate}T12:00:00`).getTime()) / 86400000 > 30) continue;
+    notifs.push({
+      id: `rise-${r.label}-${r.lastDate}`,
+      title: `${r.label} costs more than before`,
+      body: `Earlier payments were ${formatInr(r.previous)}; the latest was ${formatInr(r.latest)} (${Math.round(r.risePct)}% higher). Check whether the plan or price changed.`,
+      kind: "bill_rise",
+      severity: "info",
+      at: today,
+    });
   }
 
   // ─── 3. Bucket Behind Schedule (mid-month check) ─────────────────────────

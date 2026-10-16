@@ -16,6 +16,7 @@ import { buildObligations, dueLabel, Obligation } from "../../lib/obligations";
 import { tap } from "../../lib/feedback";
 import { buildHero } from "../../lib/homeHero";
 import { SafeToSpendSheet } from "../SafeToSpendSheet";
+import { monthEndOutlook } from "../../lib/outlook";
 import { emiBurden, typicalMonthlyIncome } from "../../lib/emiPlanner";
 import { currentInstallment } from "../../lib/loanEngine";
 import { readEmiAlertPct } from "../EmiCommand";
@@ -77,6 +78,10 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
     isCurrentMonth,
   }), [snap.current.income, snap.current.expense, upcoming, monthEnd, isCurrentMonth]);
   const [mathOpen, setMathOpen] = useState(false);
+  const outlook = useMemo(
+    () => (isCurrentMonth ? monthEndOutlook({ txs: store.transactions as any, incomeSoFar: hero.moneyIn, committedLeft: hero.stillToPay }) : undefined),
+    [isCurrentMonth, store.transactions, hero.moneyIn, hero.stillToPay],
+  );
   const dueItems = useMemo(
     () => upcoming.filter((o) => o.overdue || o.dueAt <= monthEnd).map((o) => ({ title: o.title, amount: o.amount, overdue: o.overdue })),
     [upcoming, monthEnd],
@@ -238,7 +243,7 @@ export function Dashboard({ go, onAdd }: { go: (id: ScreenId) => void; onAdd?: (
                 </div>
               )}
 
-              <SafeToSpendSheet open={mathOpen} onClose={() => setMathOpen(false)} hero={hero} dueItems={dueItems} isCurrentMonth={isCurrentMonth} monthLabel={monthFull} />
+              <SafeToSpendSheet open={mathOpen} onClose={() => setMathOpen(false)} hero={hero} dueItems={dueItems} isCurrentMonth={isCurrentMonth} monthLabel={monthFull} outlook={outlook} />
 
               <CaLensCard go={go} />
 

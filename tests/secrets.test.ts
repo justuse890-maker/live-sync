@@ -13,8 +13,8 @@ describe("secret scanner", () => {
     expect(scanText(`const k = "${jwt("anon")}"`)).toEqual([]);
   });
   it("flags private keys and common provider keys", () => {
-    expect(scanText("-----BEGIN PRIVATE KEY-----")).toContain("private-key-block");
-    expect(scanText("AKIAABCDEFGHIJKLMNOP")).toContain("aws-access-key");
+    expect(scanText("-----BEGIN " + "PRIVATE KEY-----")).toContain("private-key-block");
+    expect(scanText("AKIA" + "ABCDEFGHIJKLMNOP")).toContain("aws-access-key");
     expect(scanText("gsk_" + "a1B2".repeat(11))).toContain("groq-key");
   });
   it("ignores placeholders and ordinary text", () => {

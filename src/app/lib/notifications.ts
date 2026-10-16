@@ -16,6 +16,7 @@ import type { Note } from "./notes";
 import { formatReminder, isBill } from "./notes";
 import { planForNote } from "./reminderPlan";
 import { cardDueWarning } from "./cardDue";
+import { formatInr } from "./money";
 import { channelDefFor, tierForAlert, type Tier } from "./notifChannels";
 import { reminderPrefs } from "./reminderPrefs";
 import { localUpsert } from "./localDb";
@@ -65,7 +66,7 @@ export async function requestNotificationPermission(): Promise<PermissionState> 
 type TimedAlert = { at: Date; title: string; body: string; key: string; tier: Tier };
 
 function alertTimesFor(o: Obligation, now: Date): TimedAlert[] {
-  const amt = o.amount ? `₹${Math.round(o.amount).toLocaleString("en-IN")}` : "";
+  const amt = o.amount ? formatInr(o.amount) : "";
   const out: TimedAlert[] = [];
   // Card bills get the same plain wording as the card screen: what is due, why it matters, one next step.
   const cardCopy = (daysLeft: number) => {

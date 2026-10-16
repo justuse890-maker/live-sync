@@ -11,6 +11,8 @@ import { useStore } from "../store";
 import { buildObligations, dueLabel, daysUntil } from "./obligations";
 import { generateSmartNotifications } from "./notifEngine";
 import { localList, localReplace } from "./localDb";
+import { formatInr } from "./money";
+import { applyAlertPrefs, loadPrefs, type AlertPrefs } from "./alertPrefs";
 
 export type AlertItem = {
   id: string;
@@ -33,6 +35,12 @@ export function useAlerts() {
   const store = useStore();
   const [inbox, setInbox] = useState<Array<{ id: string; title: string; body?: string; kind: string; at: string; read: boolean }>>([]);
   const [readIds, setReadIds] = useState<Set<string>>(readSet);
+  const [alertPrefs, setAlertPrefs] = useState<AlertPrefs>(loadPrefs);
+  useEffect(() => {
+    const h = () => setAlertPrefs(loadPrefs());
+    window.addEventListener("ls-alert-prefs-changed", h);
+    return () => window.removeEventListener("ls-alert-prefs-changed", h);
+  }, []);
 
   const loadInbox = useCallback(async () => {
     try { setInbox(await localList("inbox")); } catch {}
@@ -51,7 +59,7 @@ export function useAlerts() {
 
     for (const o of buildObligations(store, 7, 10, now)) {
       const d = daysUntil(o.dueAt, now);
-      const amt = o.amount ? ` · ₹${Math.round(o.amount).toLocaleString("en-IN")}` : "";
+      const amt = o.amount ? ` · ${formatInr(o.amount)}` : "";
       out.push({
         id: `ob:${o.id}:${o.dueAt.toISOString().slice(0, 10)}`,
         title: o.title,
@@ -74,15 +82,16 @@ export function useAlerts() {
       insurance: [],
       structuredLoans: [],
       creditCards: [],
-    })) {
-      out.push({ id: n.id, title: n.title, body: n.body, kind: n.kind, severity: n.severity, at: new Date(n.at).toISOString(), read: false, screen: n.kind === "budget_alert" ? "budgets" : n.kind === "bucket_behind" ? "buckets" : "reports" });
+    }, { now, prefs: alertPrefs })) {
+      const screen = n.kind === "budget_alert" || n.kind === "budget_pace" ? "budgets" : n.kind === "bucket_behind" ? "buckets" : n.kind === "bill_rise" ? "subscriptions" : "reports";
+      out.push({ id: n.id, title: n.title, body: n.body, kind: n.kind, severity: n.severity, at: new Date(n.at).toISOString(), read: false, screen });
     }
 
     for (const m of inbox) {
       out.push({ id: `inbox:${m.id}`, title: m.title, body: m.body || "", kind: m.kind, severity: "info", at: m.at, read: m.read, screen: "notes" });
     }
 
-    return out
+    const sorted = out
       .map((x) => ({ ...x, read: x.read || readIds.has(x.id) }))
       .sort((a, b) => {
         const sev = { urgent: 0, warning: 1, info: 2 };
@@ -90,7 +99,12 @@ export function useAlerts() {
         if (sev[a.severity] !== sev[b.severity]) return sev[a.severity] - sev[b.severity];
         return b.at.localeCompare(a.at);
       });
-  }, [store.notes, store.structuredLoans, store.subscriptions, store.creditCards, store.insurance, store.householdReminders, store.societyNotices, store.loans, store.transactions, store.budgets, store.buckets, store.bucketContributions, inbox, readIds]);
+    // The user's mutes / snoozes, and one summary line instead of a burst of more than five ordinary alerts.
+    // Already-read items stay out of the batching so reading something never makes it vanish into a digest.
+    const unread = sorted.filter((x) => !x.read);
+    const read = sorted.filter((x) => x.read);
+    return [...(applyAlertPrefs(unread, alertPrefs, now) as AlertItem[]), ...read];
+  }, [alertPrefs, store.notes, store.structuredLoans, store.subscriptions, store.creditCards, store.insurance, store.householdReminders, store.societyNotices, store.loans, store.transactions, store.budgets, store.buckets, store.bucketContributions, inbox, readIds]);
 
   const markRead = useCallback((ids: string[]) => {
     setReadIds((prev) => {

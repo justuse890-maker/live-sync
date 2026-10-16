@@ -12,6 +12,7 @@ import { LEAD_CHOICES, leadLabel } from "../../lib/reminderPlan";
 import { getNotificationPermission, requestNotificationPermission, PermissionState, logToInbox } from "../../lib/notifications";
 import { prefs, playTone, feedback, tap } from "../../lib/feedback";
 import { isNative } from "../../lib/native";
+import { clearSnooze, isSnoozed, loadPrefs, savePrefs, snoozeKind, type AlertPrefs } from "../../lib/alertPrefs";
 
 const kindIcon: Record<string, typeof Bell> = {
   emi: CreditCard, card: CreditCard, credit_due: CreditCard, emi_due: CreditCard,
@@ -19,7 +20,7 @@ const kindIcon: Record<string, typeof Bell> = {
   insurance: Shield, insurance_due: Shield,
   note: StickyNote, reminder: BellRing,
   household: Home, society: Building2, loan: HandCoins,
-  budget_alert: TrendingDown, bucket_behind: PiggyBank, monthly_summary: Zap,
+  budget_alert: TrendingDown, budget_pace: TrendingDown, bill_rise: Receipt, bucket_behind: PiggyBank, monthly_summary: Zap, digest: Bell,
 };
 
 const sevStyle = {
@@ -39,6 +40,8 @@ export function Notifications({ onBack }: { onBack: () => void }) {
   const [askOn, setAskOn] = useState(reminderPrefs.askAfterExpense);
   const [lead, setLead] = useState(reminderPrefs.leadDays);
   const [remTime, setRemTime] = useState(reminderPrefs.time);
+  const [ap, setAp] = useState<AlertPrefs>(loadPrefs);
+  const changeAp = (next: AlertPrefs) => { setAp(next); savePrefs(next); window.dispatchEvent(new Event("ls-alert-prefs-changed")); };
 
   useEffect(() => { getNotificationPermission().then(setPerm); }, []);
 
@@ -163,6 +166,39 @@ export function Notifications({ onBack }: { onBack: () => void }) {
             ))
           )}
 
+          {/* Which smart alerts to show */}
+          <div className="rounded-2xl bg-card border border-border/60 p-4 space-y-3">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Alerts I want</div>
+            <div>
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>Warn me when a budget is</span><span>{ap.budgetWarnPct}% used</span>
+              </div>
+              <input type="range" min={50} max={95} step={5} value={ap.budgetWarnPct} onChange={(e) => changeAp({ ...ap, budgetWarnPct: Number(e.target.value) })} className="w-full mt-1" aria-label="Budget warning level in percent" />
+              <div className="text-[11px] text-muted-foreground">A budget that is already exceeded is always shown.</div>
+            </div>
+            <Toggle icon={TrendingDown} label="Early heads-up when my pace will pass a budget" on={ap.paceAlerts} onChange={(v) => changeAp({ ...ap, paceAlerts: v })} />
+            <div className="space-y-2 pt-1">
+              {ALERT_KINDS.map((k) => {
+                const muted = ap.muted.includes(k.id);
+                const snoozed = isSnoozed(ap, k.id);
+                return (
+                  <div key={k.id} className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0"><Toggle icon={Bell} label={k.label} on={!muted} onChange={(v) => changeAp({ ...ap, muted: v ? ap.muted.filter((x) => x !== k.id) : [...ap.muted, k.id] })} /></div>
+                    {!muted && (
+                      <button
+                        onClick={() => changeAp(snoozed ? clearSnooze(ap, k.id) : snoozeKind(ap, k.id, 7))}
+                        className="shrink-0 text-[11px] font-bold text-slate-600 border border-border rounded-full px-2.5 py-1 active:scale-95"
+                      >
+                        {snoozed ? "Resume" : "Snooze 7 days"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[11px] text-muted-foreground">Payments due today or tomorrow are always shown, whatever you switch off. More than five ordinary alerts are grouped into one line.</div>
+          </div>
+
           {/* Bill reminders */}
           <div className="rounded-2xl bg-card border border-border/60 p-4 space-y-3">
             <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Bill reminders</div>
@@ -214,6 +250,14 @@ export function Notifications({ onBack }: { onBack: () => void }) {
     </>
   );
 }
+
+const ALERT_KINDS = [
+  { id: "budget_alert", label: "Budget warnings" },
+  { id: "budget_pace", label: "Budget pace heads-ups" },
+  { id: "bucket_behind", label: "Goal buckets falling behind" },
+  { id: "bill_rise", label: "Bills that cost more" },
+  { id: "monthly_summary", label: "Monthly wrap-up" },
+];
 
 function Toggle({ icon: Icon, label, on, onChange }: { icon: typeof Bell; label: string; on: boolean; onChange: (v: boolean) => void }) {
   return (
